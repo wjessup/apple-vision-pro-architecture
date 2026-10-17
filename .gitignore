@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+server/data/
+visionos/RevitSync.xcodeproj/
+visionos/DerivedData/
+revit-addin/**/bin/
+revit-addin/**/obj/
+.env
+.env.local

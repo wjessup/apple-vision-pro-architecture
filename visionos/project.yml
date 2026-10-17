@@ -1,0 +1,37 @@
+name: RevitSync
+options:
+  bundleIdPrefix: com.yourcompany
+  deploymentTarget:
+    visionOS: "2.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    DEVELOPMENT_TEAM: ""
+targets:
+  RevitSync:
+    type: application
+    platform: visionOS
+    sources:
+      - RevitSync
+    info:
+      path: RevitSync/Info.plist
+      properties:
+        CFBundleDisplayName: Revit Sync
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
+          UISceneConfigurations: {}
+        NSLocalNetworkUsageDescription: Revit Sync connects to the Revit sync server running on a computer on your Wi-Fi network to download models.
+        NSBonjourServiceTypes:
+          - _revitsync._tcp
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSWorldSensingUsageDescription: Revit Sync remembers where you pinned the model so it is in the same place next time.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yourcompany.RevitSync
+        TARGETED_DEVICE_FAMILY: "7"
+        ENABLE_PREVIEWS: YES

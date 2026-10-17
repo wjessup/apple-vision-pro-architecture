@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Revit Sync</Name>
+    <Assembly>RevitSync\RevitSync.Addin.dll</Assembly>
+    <AddInId>7D1C2E4B-5B0E-4C3A-9F2B-1A6E4D8C0F21</AddInId>
+    <FullClassName>RevitSync.App</FullClassName>
+    <VendorId>RVSY</VendorId>
+    <VendorDescription>Revit Sync, local Vision Pro viewer</VendorDescription>
+  </AddIn>
+</RevitAddIns>

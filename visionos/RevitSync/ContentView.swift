@@ -11,7 +11,7 @@ struct ContentView: View {
         NavigationStack {
             Form {
                 serverSection
-                if model.connection == .connected {
+                if model.connection == .connected || !model.projectRows.isEmpty {
                     projectSection
                 }
                 if model.selectedProjectID != nil {
@@ -27,6 +27,7 @@ struct ContentView: View {
             }
         }
         .task { model.startDiscovery() }
+        .task { await model.sync() }
         .task {
             if !model.serverURLString.isEmpty { await model.connect() }
         }
@@ -81,19 +82,19 @@ struct ContentView: View {
     }
 
     private var projectSection: some View {
-        Section("Project") {
-            if model.projects.isEmpty {
+        Section {
+            if model.projectRows.isEmpty {
                 Text("No projects yet. Press “View in Apple Vision Pro” in Revit, or run tools/push_model.py.")
                     .foregroundStyle(.secondary)
             }
-            ForEach(model.projects) { project in
+            ForEach(model.projectRows) { project in
                 Button {
                     Task { await model.select(projectID: project.id) }
                 } label: {
                     HStack {
                         VStack(alignment: .leading) {
                             Text(project.name)
-                            Text("Revision \(project.revision)").font(.caption).foregroundStyle(.secondary)
+                            Text(subtitle(project)).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if project.id == model.selectedProjectID {
@@ -102,7 +103,20 @@ struct ContentView: View {
                     }
                 }
             }
+        } header: {
+            Text("Project")
+        } footer: {
+            if model.connection != .connected {
+                Text("Showing models saved on this device. Connect to the server to download new projects or updates.")
+            }
         }
+    }
+
+    private func subtitle(_ project: ProjectRow) -> String {
+        guard let saved = project.savedRevision else { return "Revision \(project.revision) · not downloaded" }
+        return saved == project.revision
+            ? "Revision \(saved) · on this device"
+            : "Revision \(saved) on this device · \(project.revision) on server"
     }
 
     private var revisionSection: some View {
@@ -125,7 +139,7 @@ struct ContentView: View {
             }
             Toggle("Reload automatically", isOn: $model.autoReload)
             Button("Sync now") { Task { await model.sync() } }
-                .disabled(model.phase != .idle)
+                .disabled(model.phase != .idle || model.connection != .connected)
             if let error = model.lastError {
                 Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }

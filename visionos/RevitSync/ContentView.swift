@@ -14,6 +14,7 @@ struct ContentView: View {
                     if model.selectedProjectID != nil {
                         revisionSection
                         placementSection
+                        realWorldSection
                     }
                 }
                 .navigationTitle("Projects")
@@ -202,6 +203,16 @@ struct ContentView: View {
             Button("Place in front of me") { model.scene.placeInFrontOfUser() }
                 .disabled(model.locked || !model.immersiveOpen)
             Text(placementCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var realWorldSection: some View {
+        @Bindable var model = model
+        return Section("Real world") {
+            Toggle("Show scan mesh", isOn: $model.showScanMesh)
+            Text("Trees, people and other real things the headset has scanned (within about 5 m) hide the parts of the model behind them. Turn this on to see the scan as a cyan wireframe.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

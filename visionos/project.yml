@@ -31,7 +31,7 @@ targets:
           - _revitsync._tcp
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSWorldSensingUsageDescription: Revit Sync remembers where you pinned the model so it is in the same place next time.
+        NSWorldSensingUsageDescription: Revit Sync remembers where you pinned the model so it is in the same place next time, and scans your surroundings so real objects like trees hide the parts of the model behind them.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yourcompany.RevitSync

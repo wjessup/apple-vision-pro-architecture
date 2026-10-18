@@ -54,6 +54,9 @@ final class AppModel {
     var locked = false {
         didSet { scene.setLocked(locked) }
     }
+    var showScanMesh = false {
+        didSet { scene.scanMesh.isVisible = showScanMesh }
+    }
     var placementMode = PlacementMode(rawValue: UserDefaults.standard.string(forKey: "placementMode") ?? "") ?? .basic {
         didSet {
             UserDefaults.standard.set(placementMode.rawValue, forKey: "placementMode")

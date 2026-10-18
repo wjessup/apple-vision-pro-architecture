@@ -76,13 +76,19 @@ final class SceneController {
 
     static let scaleRange: ClosedRange<Float> = 0.001...1
 
-    private static let freeCornerMaterial = SimpleMaterial(color: .systemOrange, roughness: 0.3, isMetallic: false)
-    private static let lockedCornerMaterial = SimpleMaterial(color: .systemGreen, roughness: 0.3, isMetallic: false)
-    private static let unavailableCornerMaterial: UnlitMaterial = {
-        var material = UnlitMaterial(color: .systemGray)
-        material.blending = .transparent(opacity: 0.4)
+    private static let freeCornerMaterial = cornerMaterial(.systemOrange, opacity: 1)
+    private static let lockedCornerMaterial = cornerMaterial(.systemGreen, opacity: 1)
+    private static let unavailableCornerMaterial = cornerMaterial(.systemGray, opacity: 0.4)
+
+    // At real size a footprint corner sits inside the walls and usually below the real floor
+    // (footings), where the model and the scanned-room occluder would hide it, so corner balls
+    // skip the depth test and draw in the transparent pass, after opaque geometry.
+    private static func cornerMaterial(_ color: UIColor, opacity: Float) -> UnlitMaterial {
+        var material = UnlitMaterial(color: color)
+        material.blending = .transparent(opacity: .init(floatLiteral: opacity))
+        material.readsDepth = false
         return material
-    }()
+    }
 
     private(set) var measuring = false
     private(set) var preparingMeasure = false
@@ -126,7 +132,7 @@ final class SceneController {
             ball.components.set(InputTargetComponent())
             let text = ModelEntity(
                 mesh: .generateText(name, extrusionDepth: 0.002, font: .systemFont(ofSize: 0.05, weight: .bold)),
-                materials: [UnlitMaterial(color: .white)])
+                materials: [SceneController.cornerMaterial(.white, opacity: 1)])
             text.position.x = -text.visualBounds(relativeTo: text).center.x
             let label = Entity()
             label.position = [0, 0.06, 0]

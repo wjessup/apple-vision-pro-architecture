@@ -29,7 +29,6 @@ enum ScanStore {
     struct Loaded {
         var anchors: [ScanAnchorRecord] = []
         var cells: [CellKey: ScanCellRecord] = [:]
-        var legacyAnchorID: UUID?
     }
 
     private struct LegacyAnchorFile: Codable {
@@ -48,15 +47,17 @@ enum ScanStore {
 
     /// A directory written by the single-anchor layout (`anchor.json` + `*.patch`) cannot be
     /// converted, since its patches are only placed by that one anchor: it is removed, and its anchor
-    /// id handed back so the caller can drop the world anchor too.
+    /// queued for removal from world tracking.
     static func load(project: String) -> Loaded {
         let dir = directory(project)
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         if files.contains(where: { $0.lastPathComponent == "anchor.json" || $0.pathExtension == "patch" }) {
-            let legacy = (try? Data(contentsOf: dir.appending(path: "anchor.json")))
-                .flatMap { try? JSONDecoder().decode(LegacyAnchorFile.self, from: $0) }?.anchorID
+            if let legacy = (try? Data(contentsOf: dir.appending(path: "anchor.json")))
+                .flatMap({ try? JSONDecoder().decode(LegacyAnchorFile.self, from: $0) })?.anchorID {
+                addStaleAnchors([legacy])
+            }
             try? FileManager.default.removeItem(at: dir)
-            return Loaded(legacyAnchorID: legacy)
+            return Loaded()
         }
         var loaded = Loaded()
         loaded.anchors = (try? Data(contentsOf: dir.appending(path: "anchors.json")))
@@ -89,6 +90,28 @@ enum ScanStore {
     static func clear(project: String) {
         try? FileManager.default.removeItem(at: directory(project))
     }
+
+    // World anchors that no longer place any scan. They can only be removed while tracking runs,
+    // so the ids wait on disk until then and survive a quit in between.
+
+    static func staleAnchors() -> [UUID] {
+        (try? Data(contentsOf: staleFile)).flatMap { try? JSONDecoder().decode([UUID].self, from: $0) } ?? []
+    }
+
+    static func addStaleAnchors(_ ids: [UUID]) {
+        guard !ids.isEmpty else { return }
+        setStaleAnchors(staleAnchors() + ids)
+    }
+
+    static func setStaleAnchors(_ ids: [UUID]) {
+        if ids.isEmpty {
+            try? FileManager.default.removeItem(at: staleFile)
+        } else {
+            try? JSONEncoder().encode(ids).write(to: staleFile, options: .atomic)
+        }
+    }
+
+    private static var staleFile: URL { root.appending(path: "stale-anchors.json") }
 
     private static func directory(_ project: String) -> URL {
         root.appending(path: project, directoryHint: .isDirectory)

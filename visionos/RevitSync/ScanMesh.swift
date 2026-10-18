@@ -317,8 +317,11 @@ final class ScanMesh {
         return (occluder, wireframe)
     }
 
+    /// Counts cells, so a live chunk over remembered cells is not counted twice and freezing it into
+    /// them does not drop the count; a chunk not yet placed on the grid counts as one.
     private func recount() {
-        patchCount = live.count + pendingFreeze.count + cells.count
+        let keys = live.values.reduce(into: Set(cells.keys)) { $0.formUnion($1.covering) }
+        patchCount = keys.count + pendingFreeze.count + live.values.filter { $0.covering.isEmpty }.count
         rememberedCount = cells.count
     }
 
@@ -363,7 +366,7 @@ final class ScanMesh {
         return data
     }
 
-    private static func translation(_ m: simd_float4x4) -> SIMD3<Float> {
+    private nonisolated static func translation(_ m: simd_float4x4) -> SIMD3<Float> {
         SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
     }
 

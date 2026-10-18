@@ -70,8 +70,8 @@ final class SceneController {
     private var pinTask: Task<Void, Never>?
     private(set) var project: String?
     private var creatingScanAnchor = false
+    private var scanAnchorAddFailed = false
     private var scanEpoch = 0
-    private var staleScanAnchors: [UUID] = []
     private var partitions: [String: (sha256: String, entity: Entity, outline: [SIMD3<Float>])] = [:]
     var isGesturing = false
     var scaleLocked = true
@@ -175,7 +175,6 @@ final class SceneController {
         applyPlacement()
         refreshCornerBalls()
         let scan = ScanStore.load(project: project)
-        if let legacy = scan.legacyAnchorID { staleScanAnchors.append(legacy) }
         scanEpoch += 1
         scanMesh.load(project: project, anchors: scan.anchors, cells: scan.cells)
         Task { await ensureScanAnchors() }
@@ -611,13 +610,14 @@ final class SceneController {
             }
             Task { await ensureScanAnchors() }
             for await update in worldTracking.anchorUpdates {
-                if case .removed = update.event { continue }
                 let m = update.anchor.originFromAnchorTransform
+                var removed = false
+                if case .removed = update.event { removed = true }
                 if scanMesh.hasAnchor(update.anchor.id) {
-                    scanMesh.anchorUpdated(update.anchor.id, originFromAnchor: m, tracked: update.anchor.isTracked)
+                    scanMesh.anchorUpdated(update.anchor.id, originFromAnchor: m, tracked: update.anchor.isTracked && !removed)
                     continue
                 }
-                guard update.anchor.isTracked else { continue }
+                guard update.anchor.isTracked, !removed else { continue }
                 guard update.anchor.id == placement.anchorID, !isGesturing else { continue }
                 placement.position = [m.columns.3.x, m.columns.3.y, m.columns.3.z]
                 placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
@@ -635,9 +635,10 @@ final class SceneController {
     /// no new update. A project without pins gets its first one at the wearer's position.
     private func ensureScanAnchors() async {
         guard worldTracking.state == .running, project != nil else { return }
-        let stale = staleScanAnchors
-        staleScanAnchors.removeAll()
+        let stale = ScanStore.staleAnchors()
         for id in stale { try? await worldTracking.removeAnchor(forID: id) }
+        ScanStore.setStaleAnchors(ScanStore.staleAnchors().filter { !stale.contains($0) })
+        scanAnchorAddFailed = false
         let ids = scanMesh.anchorIDs
         guard !ids.isEmpty else {
             maintainScanAnchors()
@@ -650,16 +651,20 @@ final class SceneController {
     }
 
     /// Adds a pin when the project has none, or once the wearer is farther than the spacing from
-    /// every known pin, so no cell is far from the pin placing it. Only one add is in flight at a time.
+    /// every known pin, so no cell is far from the pin placing it. Only one add is in flight at a
+    /// time, and a refused add is not retried until tracking next resumes or the project changes.
     private func maintainScanAnchors() {
-        guard !creatingScanAnchor, let planned = plannedScanAnchor() else { return }
+        guard !creatingScanAnchor, !scanAnchorAddFailed, let planned = plannedScanAnchor() else { return }
         creatingScanAnchor = true
         let epoch = scanEpoch
         let project = project
         Task {
             defer { creatingScanAnchor = false }
             let anchor = WorldAnchor(originFromAnchorTransform: planned.originFromAnchor)
-            guard (try? await worldTracking.addAnchor(anchor)) != nil else { return }
+            guard (try? await worldTracking.addAnchor(anchor)) != nil else {
+                scanAnchorAddFailed = true
+                return
+            }
             guard self.project == project, scanEpoch == epoch else {
                 try? await worldTracking.removeAnchor(forID: anchor.id)
                 return
@@ -685,7 +690,7 @@ final class SceneController {
     func clearScan() {
         guard let project else { return }
         ScanStore.clear(project: project)
-        staleScanAnchors += scanMesh.anchorIDs
+        ScanStore.addStaleAnchors(scanMesh.anchorIDs)
         scanEpoch += 1
         scanMesh.clear()
         Task { await ensureScanAnchors() }

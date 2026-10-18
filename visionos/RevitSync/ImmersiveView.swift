@@ -5,6 +5,7 @@ struct ImmersiveView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var dragStart: SIMD3<Float>?
     @State private var draggedCorner: Int?
@@ -58,6 +59,10 @@ struct ImmersiveView: View {
         .simultaneousGesture(measureTap)
         .simultaneousGesture(tap)
         .onAppear { model.immersiveOpen = true }
+        // The main window may be closed while the space stays open, so the space saves too.
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { scene.scanMesh.saveLive() }
+        }
         .onDisappear {
             model.immersiveOpen = false
             scene.scanMesh.flushLive()

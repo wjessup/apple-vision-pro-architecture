@@ -64,6 +64,10 @@ final class AppModel {
         }
     }
 
+    var followMe = UserDefaults.standard.object(forKey: "followMe") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(followMe, forKey: "followMe") }
+    }
+
     let scene = SceneController()
 
     private var client: SyncClient?

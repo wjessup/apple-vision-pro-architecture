@@ -28,9 +28,14 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    first connection triggers the Local Network permission prompt — allow it. The app allows plain
    HTTP (`NSAllowsArbitraryLoads` in `project.yml`) because the server lives on your own local
    network and is reached by IP address, which App Transport Security would otherwise block.
-2. **Project** — pick the project (auto-selected when there is only one). It downloads and loads
-   every level, then listens for `scene.updated`.
-3. **Show model in room** — opens the mixed immersive space. The model starts as a tabletop
+2. **Project** — tap a project to open it in the room (the mixed immersive space). It downloads
+   and loads every level, then listens for `scene.updated`. The window stays open; *Hide model*
+   in its Placement section closes the model.
+3. **Tools panel** — a compact panel floats a little below eye level with the placement controls
+   (the same ones as the window, including *Corners* and *Advanced*),
+   *Measure*, *Show scan mesh* and *Follow me*. When you turn away or walk off it glides back in
+   front of you; turn *Follow me* off to leave it where it is (the window has the same switch).
+   The model starts as a tabletop
    (1:50) in front of you; the small blue sphere is a grab handle that stays the same size at any
    scale.
 4. **Placement** — three modes, chosen with the *Basic / Precise / Corners* switch (remembered
@@ -56,7 +61,8 @@ to a server on the same Mac works there, but world anchors and hand gestures are
      origin, so drag it until the project base point sits where you want the floor to be, or press
      *Place in front of me* which drops the origin on the floor 1.5 m ahead. Presets and *Place in
      front of me* are disabled while a corner is locked.
-   - *Lock position* disables all gestures so a presenter can't nudge it.
+   - *Lock position* disables the move / scale / rotate and corner gestures so a presenter can't
+     nudge it; measuring still works.
    - Placement is saved per project (position, rotation, scale) and also registered as an ARKit
      world anchor, so after a relaunch or a Digital-Crown recenter the model returns to the same
      spot in the room. The first time, visionOS asks for World Sensing permission.
@@ -73,10 +79,14 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    as a cyan wireframe so you can see what is doing the hiding; remembered patches are dimmer.
    The scan also hides the app's own window if it ends up behind a real object. The visionOS
    Simulator has no scan, so there nothing is hidden.
-6. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
+6. **Measure** — turn on *Measure* in the tools panel, then pinch two spots on the model to draw
+   a line labelled in real feet and inches (nearest ¼"), whatever the model's scale. Measurements
+   move with the model, are saved per project, and stay until you tap a label and press the trash
+   button. Measuring works while the position is locked.
+7. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
    use *Load now* when ready.
-7. **Offline** — every project you have synced is saved on the headset. Without the server (Wi-Fi
+8. **Offline** — every project you have synced is saved on the headset. Without the server (Wi-Fi
    off, away from the office) the *Project* list still shows them, the last-viewed model loads at
    launch, and any saved project opens at its pinned placement. The server is only needed to
    download new projects and updates; rows marked *not downloaded* or showing a newer server
@@ -95,7 +105,9 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/Footprint.swift` | Plan-outline corner detection and the two-corner alignment solve (plain Swift) |
 | `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe; keeps and reloads patches the headset drops |
 | `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/` patches + anchor id |
-| `RevitSync/ImmersiveView.swift` | Mixed immersive space and the drag / magnify / rotate gestures |
+| `RevitSync/ImmersiveView.swift` | Mixed immersive space, gestures, the tools-panel and measurement-label attachments |
+| `RevitSync/ToolsPanel.swift` | Following tools panel, shared placement controls, measurement labels |
+| `RevitSync/Measurements.swift` | Measurement model, feet-and-inches formatting, per-project storage |
 | `RevitSync/ContentView.swift` | The control window |
 
 Models are loaded with `Entity(contentsOf:)` off the main actor; files live under

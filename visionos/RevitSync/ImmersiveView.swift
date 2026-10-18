@@ -46,7 +46,7 @@ struct ImmersiveView: View {
         MagnifyGesture()
             .targetedToEntity(scene.root)
             .onChanged { value in
-                guard !model.locked else { return }
+                guard !model.locked, model.placementMode == .basic else { return }
                 if scaleStart == nil {
                     scaleStart = scene.placement.scale
                     scene.isGesturing = true
@@ -64,7 +64,7 @@ struct ImmersiveView: View {
         RotateGesture3D(constrainedToAxis: .y)
             .targetedToEntity(scene.root)
             .onChanged { value in
-                guard !model.locked else { return }
+                guard !model.locked, model.placementMode == .basic else { return }
                 if yawStart == nil {
                     yawStart = scene.placement.yaw
                     scene.isGesturing = true

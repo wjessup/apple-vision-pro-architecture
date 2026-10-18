@@ -5,6 +5,7 @@ struct ImmersiveView: View {
     @Environment(AppModel.self) private var model
 
     @State private var dragStart: SIMD3<Float>?
+    @State private var draggedCorner: Int?
     @State private var scaleStart: Float?
     @State private var yawStart: Float?
     @State private var panelUpdates: EventSubscription?
@@ -46,6 +47,7 @@ struct ImmersiveView: View {
         .simultaneousGesture(magnify)
         .simultaneousGesture(rotate)
         .simultaneousGesture(measureTap)
+        .simultaneousGesture(tap)
         .onAppear { model.immersiveOpen = true }
         .onDisappear {
             model.immersiveOpen = false
@@ -59,7 +61,7 @@ struct ImmersiveView: View {
         SpatialTapGesture()
             .targetedToEntity(scene.root)
             .onEnded { value in
-                guard scene.measuring, isModelSurface(value.entity) else { return }
+                guard scene.measuring, isDescendant(value.entity, of: scene.model) else { return }
                 let point = value.convert(value.location3D, from: .local, to: .scene)
                 scene.addMeasurePoint(scene.root.convert(position: point, from: nil))
             }
@@ -67,20 +69,41 @@ struct ImmersiveView: View {
 
     private var drag: some Gesture {
         DragGesture(minimumDistance: 0.0, coordinateSpace: .global)
-            .targetedToEntity(scene.root)
+            .targetedToAnyEntity()
             .onChanged { value in
                 guard !model.locked, !scene.measuring else { return }
                 if dragStart == nil {
-                    dragStart = scene.root.position(relativeTo: nil)
+                    if let corner = scene.cornerIndex(of: value.entity), let start = scene.cornerWorld(corner) {
+                        draggedCorner = corner
+                        dragStart = start
+                    } else if isDescendant(value.entity, of: scene.root), !isDescendant(value.entity, of: scene.measureRoot) {
+                        dragStart = scene.root.position(relativeTo: nil)
+                    } else {
+                        return
+                    }
                     scene.isGesturing = true
                 }
-                let offset = value.convert(value.translation3D, from: .local, to: .scene)
-                scene.setPosition(dragStart! + offset)
+                let target = dragStart! + value.convert(value.translation3D, from: .local, to: .scene)
+                if let draggedCorner {
+                    scene.dragCorner(draggedCorner, to: target)
+                } else {
+                    scene.setPosition(target)
+                }
             }
             .onEnded { _ in
                 guard dragStart != nil else { return }
                 dragStart = nil
+                draggedCorner = nil
                 finishGesture()
+            }
+    }
+
+    private var tap: some Gesture {
+        SpatialTapGesture()
+            .targetedToAnyEntity()
+            .onEnded { value in
+                guard !model.locked, !scene.measuring, let corner = scene.cornerIndex(of: value.entity) else { return }
+                scene.toggleCornerLock(corner)
             }
     }
 
@@ -88,7 +111,7 @@ struct ImmersiveView: View {
         MagnifyGesture()
             .targetedToEntity(scene.root)
             .onChanged { value in
-                guard !model.locked, !scene.measuring, model.placementMode == .basic else { return }
+                guard !model.locked, !scene.measuring, model.placementMode == .basic, !scene.scaleLocked else { return }
                 if scaleStart == nil {
                     scaleStart = scene.placement.scale
                     scene.isGesturing = true
@@ -121,10 +144,12 @@ struct ImmersiveView: View {
             }
     }
 
-    private func isModelSurface(_ entity: Entity) -> Bool {
+    // Drag and tap target any entity (corner balls), so attachments such as the tools panel and
+    // measurement labels must be filtered out by ancestry.
+    private func isDescendant(_ entity: Entity, of ancestor: Entity) -> Bool {
         var current: Entity? = entity
         while let e = current {
-            if e === scene.model { return true }
+            if e === ancestor { return true }
             current = e.parent
         }
         return false

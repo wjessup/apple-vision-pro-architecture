@@ -78,7 +78,7 @@ final class AppModel {
     init() {
         scene.setMode(placementMode)
         if let id = selectedProjectID, library[id] != nil {
-            scene.activate(project: id)
+            activateScene(project: id)
         } else {
             selectedProjectID = nil
             UserDefaults.standard.removeObject(forKey: "selectedProject")
@@ -131,11 +131,16 @@ final class AppModel {
             return
         }
         selectedProjectID = projectID
-        scene.activate(project: projectID)
+        activateScene(project: projectID)
         manifest = nil
         loadedRevision = nil
         pendingRevision = nil
         await sync()
+    }
+
+    private func activateScene(project: String) {
+        scene.activate(project: project)
+        if !scene.lockedCorners.isEmpty { placementMode = .corners }
     }
 
     func sync() async {

@@ -58,7 +58,7 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 6. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
    use *Load now* when ready.
-6. **Offline** — every project you have synced is saved on the headset. Without the server (Wi-Fi
+7. **Offline** — every project you have synced is saved on the headset. Without the server (Wi-Fi
    off, away from the office) the *Project* list still shows them, the last-viewed model loads at
    launch, and any saved project opens at its pinned placement. The server is only needed to
    download new projects and updates; rows marked *not downloaded* or showing a newer server

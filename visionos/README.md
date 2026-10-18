@@ -33,9 +33,14 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 3. **Show model in room** — opens the mixed immersive space. The model starts as a tabletop
    (1:50) in front of you; the small blue sphere is a grab handle that stays the same size at any
    scale.
-4. **Placement**
-   - Pinch and drag the handle (or any part of the model) to move it.
-   - Pinch with both hands and pull apart / twist to scale and rotate around the vertical axis.
+4. **Placement** — two modes, chosen with the *Basic / Precise* switch (remembered across launches):
+   - **Basic:** pinch and drag the handle (or any part of the model) to move it; pinch with both
+     hands and pull apart / twist to scale and rotate around the vertical axis.
+   - **Precise:** for aligning large models exactly. Only the blue handle can be grabbed, so
+     pinching the building does nothing, and dragging the handle moves the project base point,
+     which is marked by a ring on the floor. Scale (1:1000–1:1) and rotation (−180°–180°) are set
+     with sliders in the window, with ±1% and ±1° / ±0.1° step buttons and exact readouts. Both
+     pivot around the base point.
    - *Scale* presets: 1:1, 1:20, 1:50, 1:100. Choosing 1:1 keeps the model's current origin, so
      drag it until the project base point sits where you want the floor to be, or press
      *Place in front of me* which drops the origin on the floor 1.5 m ahead.

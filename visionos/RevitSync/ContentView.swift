@@ -233,7 +233,7 @@ struct ContentView: View {
     private var scanStatus: String {
         let scan = model.scene.scanMesh
         let count = "\(scan.patchCount) patch\(scan.patchCount == 1 ? "" : "es") kept"
-        return scan.isAligned || scan.patchCount == 0 ? count : "\(count) · aligning to previous scan…"
+        return scan.isAligned || scan.rememberedCount == 0 ? count : "\(count) · aligning to previous scan…"
     }
 
     private var placementCaption: String {

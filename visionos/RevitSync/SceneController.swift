@@ -94,6 +94,7 @@ final class SceneController {
 
     func activate(project: String) {
         guard self.project != project else { return }
+        scanMesh.flushLive()
         self.project = project
         clear()
         placement = Placement.load(project: project) ?? .tabletop
@@ -227,7 +228,16 @@ final class SceneController {
                     }
                 }
             }
-            await ensureScanAnchor()
+            Task {
+                // Providers pause while the immersive space is closed; a project picked or cleared
+                // in that state gets its scan anchor when tracking resumes.
+                for await event in session.events {
+                    if case .dataProviderStateChanged(_, .running, _) = event {
+                        await ensureScanAnchor()
+                    }
+                }
+            }
+            Task { await ensureScanAnchor() }
             for await update in worldTracking.anchorUpdates {
                 if case .removed = update.event { continue }
                 guard update.anchor.isTracked else { continue }
@@ -252,9 +262,9 @@ final class SceneController {
         guard worldTracking.state == .running, let project else { return }
         if let scanAnchorID {
             // Switching back to a project whose anchor is already tracked produces no new update.
-            if let known = await worldTracking.allAnchors?.first(where: { $0.id == scanAnchorID }), known.isTracked {
-                scanMesh.setAnchorTransform(known.originFromAnchorTransform)
-            }
+            let known = await worldTracking.allAnchors?.first { $0.id == scanAnchorID }
+            guard self.project == project, self.scanAnchorID == scanAnchorID, let known, known.isTracked else { return }
+            scanMesh.setAnchorTransform(known.originFromAnchorTransform)
             return
         }
         let anchor = WorldAnchor(originFromAnchorTransform: matrix_identity_float4x4)
@@ -265,6 +275,7 @@ final class SceneController {
         }
         scanAnchorID = anchor.id
         ScanStore.saveAnchor(anchor.id, project: project)
+        scanMesh.setAnchorTransform(anchor.originFromAnchorTransform)
     }
 
     func clearScan() {

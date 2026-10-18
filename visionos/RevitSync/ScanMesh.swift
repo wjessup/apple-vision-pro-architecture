@@ -20,6 +20,7 @@ final class ScanMesh {
     }
 
     private(set) var patchCount = 0
+    private(set) var rememberedCount = 0
     private(set) var isAligned = false
 
     private struct Patch {
@@ -97,7 +98,14 @@ final class ScanMesh {
     func setAnchorTransform(_ transform: simd_float4x4) {
         anchored.transform = Transform(matrix: transform)
         anchored.isEnabled = true
+        let wasAligned = isAligned
         isAligned = true
+        if !wasAligned {
+            // Remembered patches only have a world position from here on; compare everything
+            // scanned so far against them, then freeze what was waiting for the anchor.
+            for patch in live.values { replaceRemembered(coveredBy: patch) }
+            for patch in pendingFreeze { replaceRemembered(coveredBy: patch) }
+        }
         for patch in pendingFreeze { attachRemembered(patch) }
         pendingFreeze.removeAll()
         recount()
@@ -165,6 +173,7 @@ final class ScanMesh {
     /// patch's centre is the same chunk scanned again: the remembered copy and its file go away,
     /// and the live patch is saved in its place when it is frozen.
     private func replaceRemembered(coveredBy patch: Patch) {
+        guard isAligned else { return }
         let bounds = patch.occluder.visualBounds(relativeTo: nil)
         remembered.removeAll { candidate in
             let center = candidate.occluder.visualBounds(relativeTo: nil).center
@@ -186,6 +195,7 @@ final class ScanMesh {
 
     private func recount() {
         patchCount = live.count + remembered.count + pendingFreeze.count
+        rememberedCount = remembered.count
     }
 
     // MARK: Geometry packing (float32 xyz triples; uint32 indices, three per triangle)
@@ -226,8 +236,12 @@ final class ScanMesh {
         return stride(from: 0, to: floats.count - 2, by: 3).map { SIMD3(floats[$0], floats[$0 + 1], floats[$0 + 2]) }
     }
 
+    // Bytes decoded from a property list carry no alignment guarantee, so read them unaligned.
     private static func unpacked<T>(_ data: Data, as: T.Type) -> [T] {
-        data.withUnsafeBytes { Array($0.bindMemory(to: T.self)) }
+        let size = MemoryLayout<T>.stride
+        return data.withUnsafeBytes { bytes in
+            (0..<(bytes.count / size)).map { bytes.loadUnaligned(fromByteOffset: $0 * size, as: T.self) }
+        }
     }
 
     private static func columns(_ m: simd_float4x4) -> [Float] {

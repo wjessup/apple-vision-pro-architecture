@@ -503,6 +503,16 @@ final class SceneController {
         }
     }
 
+    // Balls keep their 8 cm size within 1.5 m of the user and grow linearly beyond it, so they
+    // cover a constant visual angle when the corners of a real-size model are far away.
+    func updateCornerBallSize() {
+        let eye = devicePose().map { SIMD3<Float>($0.columns.3.x, $0.columns.3.y, $0.columns.3.z) }
+        for ball in cornerBalls where ball.isEnabled || eye == nil {
+            let distance = eye.map { simd_distance(ball.position(relativeTo: nil), $0) } ?? 0
+            ball.scale = SIMD3<Float>(repeating: max(1, distance / 1.5) / placement.scale)
+        }
+    }
+
     func setPosition(_ position: SIMD3<Float>) {
         placement.position = position
         applyPlacement()
@@ -553,7 +563,7 @@ final class SceneController {
         handle.scale = SIMD3<Float>(repeating: 1 / placement.scale)
         pivotMarker.scale = SIMD3<Float>(repeating: 1 / placement.scale)
         applyMeasureScale()
-        cornerBalls.forEach { $0.scale = SIMD3<Float>(repeating: 1 / placement.scale) }
+        updateCornerBallSize()
         // Measurements are only taken and shown at real size.
         measureRoot.isEnabled = atRealSize
         if !atRealSize {

@@ -53,13 +53,19 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 6. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
    use *Load now* when ready.
+6. **Offline** — every project you have synced is saved on the headset. Without the server (Wi-Fi
+   off, away from the office) the *Project* list still shows them, the last-viewed model loads at
+   launch, and any saved project opens at its pinned placement. The server is only needed to
+   download new projects and updates; rows marked *not downloaded* or showing a newer server
+   revision sync once connected.
 
 ## Code map
 
 | File | Role |
 | --- | --- |
 | `RevitSync/Protocol.swift` | Codable mirror of `PROTOCOL.md` (manifest, events) |
-| `RevitSync/SyncClient.swift` | HTTP + WebSocket client, content-addressed download cache |
+| `RevitSync/SyncClient.swift` | HTTP + WebSocket client |
+| `RevitSync/ModelLibrary.swift` | On-device library: saved manifests + the assets they reference |
 | `RevitSync/ServerBrowser.swift` | Bonjour discovery of `_revitsync._tcp` |
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
 | `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor |
@@ -67,5 +73,8 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/ImmersiveView.swift` | Mixed immersive space and the drag / magnify / rotate gestures |
 | `RevitSync/ContentView.swift` | The control window |
 
-Models are loaded with `Entity(contentsOf:)` off the main actor; files are cached under
-`Caches/models/<project>/<sha256>.<ext>` so a level that did not change is never downloaded twice.
+Models are loaded with `Entity(contentsOf:)` off the main actor; files live under
+`Application Support/models/<project>/<sha256>.<ext>` (excluded from backup) next to that
+project's `manifest.json`, so a level that did not change is never downloaded twice. The manifest
+is written only after all its levels have loaded, and saving it deletes the files of superseded
+revisions.

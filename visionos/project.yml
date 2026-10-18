@@ -28,7 +28,7 @@ targets:
         NSBonjourServiceTypes:
           - _revitsync._tcp
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
         NSWorldSensingUsageDescription: Revit Sync remembers where you pinned the model so it is in the same place next time.
     settings:
       base:

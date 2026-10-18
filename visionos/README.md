@@ -50,11 +50,17 @@ to a server on the same Mac works there, but world anchors and hand gestures are
      spot in the room. The first time, visionOS asks for World Sensing permission.
 5. **Real world** — while the model is shown, the headset continuously scans what's around you
    and hides any part of the model that sits behind a real object: a tree, a fence, a person.
-   The scan reaches only about 5 m (less in bright sun), and foliage is captured as coarse solid
-   shapes, so distant trees won't hide anything and close ones hide a rough lump rather than
-   leaf-by-leaf. *Show scan mesh* draws the scan as a cyan wireframe so you can see what is
-   doing the hiding. The scan also hides the app's own window if it ends up behind a real
-   object. The visionOS Simulator has no scan, so there nothing is hidden.
+   The headset only scans about 5 m around you (less in bright sun), and foliage is captured as
+   coarse solid shapes, so close trees hide a rough lump rather than leaf-by-leaf. Patches you
+   walk away from are kept rather than dropped, so walking the property builds up a scan of all
+   of it; it is saved on the headset per project and comes back the next time you open that
+   project in the same place (the *Real world* section says *aligning to previous scan…* until
+   visionOS has recognised the spot). Walking back over an area replaces the kept patch with the
+   fresh scan. *Clear scan* throws the project's scan away — use it when you scan a different
+   site under the same project or the place has changed a lot. *Show scan mesh* draws the scan
+   as a cyan wireframe so you can see what is doing the hiding; remembered patches are dimmer.
+   The scan also hides the app's own window if it ends up behind a real object. The visionOS
+   Simulator has no scan, so there nothing is hidden.
 6. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
    use *Load now* when ready.
@@ -74,7 +80,8 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/ServerBrowser.swift` | Bonjour discovery of `_revitsync._tcp` |
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
 | `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor |
-| `RevitSync/ScanMesh.swift` | Live scene-reconstruction mesh as invisible occluders, plus the debug wireframe |
+| `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe; keeps and reloads patches the headset drops |
+| `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/` patches + anchor id |
 | `RevitSync/ImmersiveView.swift` | Mixed immersive space and the drag / magnify / rotate gestures |
 | `RevitSync/ContentView.swift` | The control window |
 

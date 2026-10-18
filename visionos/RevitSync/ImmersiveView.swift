@@ -20,7 +20,10 @@ struct ImmersiveView: View {
         .simultaneousGesture(magnify)
         .simultaneousGesture(rotate)
         .onAppear { model.immersiveOpen = true }
-        .onDisappear { model.immersiveOpen = false }
+        .onDisappear {
+            model.immersiveOpen = false
+            scene.scanMesh.flushLive()
+        }
     }
 
     private var drag: some Gesture {

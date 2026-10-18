@@ -550,7 +550,10 @@ final class SceneController {
         cornerBalls.forEach { $0.scale = SIMD3<Float>(repeating: 1 / placement.scale) }
         // Measurements are only taken and shown at real size.
         measureRoot.isEnabled = atRealSize
-        if measuring, !atRealSize { setMeasuring(false) }
+        if !atRealSize {
+            if selectedMeasurement != nil { selectedMeasurement = nil }
+            if measuring { setMeasuring(false) }
+        }
     }
 
     private static func normalized(_ yaw: Float) -> Float {

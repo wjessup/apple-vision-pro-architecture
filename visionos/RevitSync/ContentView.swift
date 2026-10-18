@@ -33,11 +33,6 @@ struct ContentView: View {
             }
             .tabItem { Label("Connection", systemImage: connectionIcon) }
         }
-        .task { model.startDiscovery() }
-        .task { await model.sync() }
-        .task {
-            if !model.serverURLString.isEmpty { await model.connect() }
-        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, case .failed = model.connection else { return }
             Task { await model.connect() }

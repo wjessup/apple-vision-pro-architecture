@@ -84,6 +84,12 @@ final class AppModel {
             selectedProjectID = nil
             UserDefaults.standard.removeObject(forKey: "selectedProject")
         }
+        // Started here rather than from the window, which "Bring window here" closes and reopens.
+        startDiscovery()
+        Task { await sync() }
+        Task {
+            if !serverURLString.isEmpty { await connect() }
+        }
     }
 
     var projectRows: [ProjectRow] {
@@ -99,7 +105,7 @@ final class AppModel {
         return rows.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    func startDiscovery() {
+    private func startDiscovery() {
         browser.start { [weak self] servers in
             self?.discovered = servers
         }

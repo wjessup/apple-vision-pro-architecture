@@ -34,7 +34,7 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 3. **Tools panel** — a small panel floats a little below eye level with just two tools:
    *Bring window here* and *Measure* (with a one-line hint underneath). Placement, scan mesh and
    the other settings live in the window. *Bring window here* closes the window and reopens it
-   next to you; that resets the window to its first tab, scrolled to the top. When you turn away
+   in front of you; that resets the window to its first tab, scrolled to the top. When you turn away
    or walk off, the panel glides back in front of you; turn off *Tools panel follows me* in the
    window to leave it where it is. The model starts as a tabletop
    (1:50) in front of you; the small blue sphere is a grab handle that stays the same size at any
@@ -81,9 +81,9 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    The scan also hides the app's own window if it ends up behind a real object. The visionOS
    Simulator has no scan, so there nothing is hidden.
 6. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
-   *Scale* switch (at 1:20, 1:50 and 1:100 the *Measure* toggle is greyed out and the panel says
-   *Switch to 1:1 Real size to measure*). Turn on *Measure* in the tools panel; while it is on,
-   the model can't be moved. Look at a spot on the model and pinch to drop a yellow dot, then look
+   *Scale* switch (at 1:20, 1:50, 1:100 or any other scale the *Measure* toggle is greyed out and
+   the panel says *Switch to 1:1 Real size to measure*). Turn on *Measure* in the tools panel;
+   while it is on, pinching doesn't move the model. Look at a spot on the model and pinch to drop a yellow dot, then look
    at a second spot and pinch again: a yellow line appears between them, labelled with the
    distance in feet and inches (nearest ¼"). Tap a label, then the trash button next to it, to
    delete that measurement. Measurements are saved per project and move with the model. They

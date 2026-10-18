@@ -2,18 +2,12 @@ import SwiftUI
 
 struct ToolsPanel: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
+    let bringWindow: () -> Void
 
     var body: some View {
         let scene = model.scene
         VStack(alignment: .leading, spacing: 8) {
-            // visionOS can't move an open window; reopening it lets the utility-panel placement
-            // put it next to the user.
-            Button("Bring window here", systemImage: "macwindow") {
-                dismissWindow(id: AppModel.mainWindowID)
-                openWindow(id: AppModel.mainWindowID)
-            }
+            Button("Bring window here", systemImage: "macwindow", action: bringWindow)
             Toggle("Measure", isOn: Binding(get: { scene.measuring }, set: { scene.setMeasuring($0) }))
                 .disabled(!scene.atRealSize)
             if let measureCaption {

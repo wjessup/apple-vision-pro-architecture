@@ -104,7 +104,7 @@ final class SceneController {
         pivotMarker.isEnabled = false
 
         cornerBalls = Footprint.cornerNames.map { name in
-            let ball = ModelEntity(mesh: .generateSphere(radius: 0.04), materials: [Self.freeCornerMaterial])
+            let ball = ModelEntity(mesh: .generateSphere(radius: 0.04), materials: [SceneController.freeCornerMaterial])
             ball.name = "corner-\(name)"
             ball.generateCollisionShapes(recursive: false)
             ball.components.set(InputTargetComponent())
@@ -147,7 +147,7 @@ final class SceneController {
         entity.name = partitionID
         partitions[partitionID]?.entity.removeFromParent()
         model.addChild(entity)
-        partitions[partitionID] = (sha256, entity, Footprint.hull(meshPoints(of: entity)))
+        partitions[partitionID] = (sha256, entity, outline(of: entity))
         refreshCollision()
         refreshCorners()
     }
@@ -168,8 +168,8 @@ final class SceneController {
 
     var partitionCount: Int { partitions.count }
 
-    private func meshPoints(of entity: Entity) -> [SIMD3<Float>] {
-        var points: [SIMD3<Float>] = []
+    private func outline(of entity: Entity) -> [SIMD3<Float>] {
+        var outline: [SIMD3<Float>] = []
         var stack = [entity]
         while let current = stack.popLast() {
             stack.append(contentsOf: current.children)
@@ -180,14 +180,15 @@ final class SceneController {
                 guard let meshModel = contents.models[instance.model] else { continue }
                 let transform = toModel * instance.transform
                 for part in meshModel.parts {
-                    for p in part.positions.elements {
+                    let points = part.positions.elements.map { p -> SIMD3<Float> in
                         let q = transform * SIMD4(p, 1)
-                        points.append([q.x, q.y, q.z])
+                        return [q.x, q.y, q.z]
                     }
+                    outline.append(contentsOf: Footprint.hull(points))
                 }
             }
         }
-        return points
+        return Footprint.hull(outline)
     }
 
     private func refreshCorners() {

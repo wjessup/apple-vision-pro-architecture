@@ -185,6 +185,7 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .disabled(model.locked)
             Picker("Scale", selection: Binding(
                 get: { ScalePreset.allCases.first { abs($0.rawValue - model.scene.placement.scale) < 0.0001 } },
                 set: { preset in
@@ -276,7 +277,11 @@ struct ContentView: View {
 
     private var cornerCaption: String {
         let scene = model.scene
-        guard scene.corners != nil else { return "Load the model to find its corners." }
+        guard scene.corners != nil else {
+            return scene.partitionCount > 0
+                ? "Couldn't find four corners in this model's outline."
+                : "Load the model to find its corners."
+        }
         let locked = scene.lockedCorners.map { Footprint.cornerNames[$0] }
         switch locked.count {
         case 0:

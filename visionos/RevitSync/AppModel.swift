@@ -33,6 +33,7 @@ struct ProjectRow: Identifiable {
 @Observable
 final class AppModel {
     static let immersiveSpaceID = "model"
+    static let mainWindowID = "main"
 
     var serverURLString: String = UserDefaults.standard.string(forKey: "serverURL") ?? "" {
         didSet { UserDefaults.standard.set(serverURLString, forKey: "serverURL") }

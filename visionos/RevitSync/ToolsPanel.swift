@@ -2,31 +2,37 @@ import SwiftUI
 
 struct ToolsPanel: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
-        @Bindable var model = model
         let scene = model.scene
-        VStack(alignment: .leading, spacing: 12) {
-            PlacementControls()
-            Divider()
+        VStack(alignment: .leading, spacing: 8) {
+            // visionOS can't move an open window; reopening it lets the utility-panel placement
+            // put it next to the user.
+            Button("Bring window here", systemImage: "macwindow") {
+                dismissWindow(id: AppModel.mainWindowID)
+                openWindow(id: AppModel.mainWindowID)
+            }
             Toggle("Measure", isOn: Binding(get: { scene.measuring }, set: { scene.setMeasuring($0) }))
-            if scene.measuring {
-                Text(scene.preparingMeasure ? "Preparing…" : measureCaption)
+                .disabled(!scene.atRealSize)
+            if let measureCaption {
+                Text(measureCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Toggle("Show scan mesh", isOn: $model.showScanMesh)
-            Toggle("Follow me", isOn: $model.followMe)
         }
-        .padding(24)
-        .frame(width: 420)
+        .padding(16)
+        .frame(width: 260)
         .glassBackgroundEffect()
     }
 
-    private var measureCaption: String {
-        model.scene.pendingPoint == nil
-            ? "Pinch a spot on the model to start a measurement."
-            : "Pinch a second spot to finish it."
+    private var measureCaption: String? {
+        let scene = model.scene
+        if !scene.atRealSize { return "Switch to 1:1 Real size to measure" }
+        guard scene.measuring else { return nil }
+        if scene.preparingMeasure { return "Preparing…" }
+        return scene.pendingPoint == nil ? "Pinch a spot on the model…" : "Pinch a second spot…"
     }
 }
 

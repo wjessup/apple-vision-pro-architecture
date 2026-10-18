@@ -31,11 +31,12 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 2. **Project** — tap a project to open it in the room (the mixed immersive space). It downloads
    and loads every level, then listens for `scene.updated`. The window stays open; *Hide model*
    in its Placement section closes the model.
-3. **Tools panel** — a compact panel floats a little below eye level with the placement controls
-   (the same ones as the window, including *Corners* and *Advanced*),
-   *Measure*, *Show scan mesh* and *Follow me*. When you turn away or walk off it glides back in
-   front of you; turn *Follow me* off to leave it where it is (the window has the same switch).
-   The model starts as a tabletop
+3. **Tools panel** — a small panel floats a little below eye level with just two tools:
+   *Bring window here* and *Measure* (with a one-line hint underneath). Placement, scan mesh and
+   the other settings live in the window. *Bring window here* closes the window and reopens it
+   next to you; that resets the window to its first tab, scrolled to the top. When you turn away
+   or walk off, the panel glides back in front of you; turn off *Tools panel follows me* in the
+   window to leave it where it is. The model starts as a tabletop
    (1:50) in front of you; the small blue sphere is a grab handle that stays the same size at any
    scale.
 4. **Placement** — three modes, chosen with the *Basic / Precise / Corners* switch (remembered
@@ -79,10 +80,16 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    as a cyan wireframe so you can see what is doing the hiding; remembered patches are dimmer.
    The scan also hides the app's own window if it ends up behind a real object. The visionOS
    Simulator has no scan, so there nothing is hidden.
-6. **Measure** — turn on *Measure* in the tools panel, then pinch two spots on the model to draw
-   a line labelled in real feet and inches (nearest ¼"), whatever the model's scale. Measurements
-   move with the model, are saved per project, and stay until you tap a label and press the trash
-   button. Measuring works while the position is locked.
+6. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
+   *Scale* switch (at 1:20, 1:50 and 1:100 the *Measure* toggle is greyed out and the panel says
+   *Switch to 1:1 Real size to measure*). Turn on *Measure* in the tools panel; while it is on,
+   the model can't be moved. Look at a spot on the model and pinch to drop a yellow dot, then look
+   at a second spot and pinch again: a yellow line appears between them, labelled with the
+   distance in feet and inches (nearest ¼"). Tap a label, then the trash button next to it, to
+   delete that measurement. Measurements are saved per project and move with the model. They
+   are hidden whenever the model is not at 1:1 and come back when you return to it; leaving 1:1
+   while measuring turns *Measure* off and drops a half-finished measurement. Measuring works
+   while the position is locked.
 7. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
    use *Load now* when ready.
@@ -106,7 +113,7 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe; keeps and reloads patches the headset drops |
 | `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/` patches + anchor id |
 | `RevitSync/ImmersiveView.swift` | Mixed immersive space, gestures, the tools-panel and measurement-label attachments |
-| `RevitSync/ToolsPanel.swift` | Following tools panel, shared placement controls, measurement labels |
+| `RevitSync/ToolsPanel.swift` | Following tools panel (Bring window here, Measure), the window's placement controls, measurement labels |
 | `RevitSync/Measurements.swift` | Measurement model, feet-and-inches formatting, per-project storage |
 | `RevitSync/ContentView.swift` | The control window |
 

@@ -13,6 +13,7 @@ struct ImmersiveView: View {
     var body: some View {
         RealityView { content in
             content.add(scene.root)
+            content.add(scene.scanMesh.root)
             scene.startTracking()
         }
         .gesture(drag)

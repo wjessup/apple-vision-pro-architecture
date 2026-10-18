@@ -36,6 +36,7 @@ final class SceneController {
     let root = Entity()
     let model = Entity()
     let handle: ModelEntity
+    let scanMesh = ScanMesh()
 
     private(set) var placement = Placement.tabletop
     private(set) var project: String?
@@ -46,6 +47,7 @@ final class SceneController {
 
     private let session = ARKitSession()
     private let worldTracking = WorldTrackingProvider()
+    private let sceneReconstruction = SceneReconstructionProvider()
     private var trackingTask: Task<Void, Never>?
 
     init() {
@@ -163,11 +165,20 @@ final class SceneController {
 
     func startTracking() {
         guard trackingTask == nil, WorldTrackingProvider.isSupported else { return }
+        let reconstructs = SceneReconstructionProvider.isSupported
+        let providers: [any DataProvider] = reconstructs ? [worldTracking, sceneReconstruction] : [worldTracking]
         trackingTask = Task {
             do {
-                try await session.run([worldTracking])
+                try await session.run(providers)
             } catch {
                 return
+            }
+            if reconstructs {
+                Task {
+                    for await update in sceneReconstruction.anchorUpdates {
+                        await scanMesh.apply(update)
+                    }
+                }
             }
             for await update in worldTracking.anchorUpdates {
                 if case .removed = update.event { continue }

@@ -44,6 +44,9 @@ final class AppModel {
     var locked = false {
         didSet { scene.setLocked(locked) }
     }
+    var showScanMesh = false {
+        didSet { scene.scanMesh.isVisible = showScanMesh }
+    }
 
     let scene = SceneController()
 

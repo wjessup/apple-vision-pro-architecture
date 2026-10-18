@@ -43,7 +43,14 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    - Placement is saved per project (position, rotation, scale) and also registered as an ARKit
      world anchor, so after a relaunch or a Digital-Crown recenter the model returns to the same
      spot in the room. The first time, visionOS asks for World Sensing permission.
-5. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
+5. **Real world** — while the model is shown, the headset continuously scans what's around you
+   and hides any part of the model that sits behind a real object: a tree, a fence, a person.
+   The scan reaches only about 5 m (less in bright sun), and foliage is captured as coarse solid
+   shapes, so distant trees won't hide anything and close ones hide a rough lump rather than
+   leaf-by-leaf. *Show scan mesh* draws the scan as a cyan wireframe so you can see what is
+   doing the hiding. The scan also hides the app's own window if it ends up behind a real
+   object. The visionOS Simulator has no scan, so there nothing is hidden.
+6. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
    use *Load now* when ready.
 
@@ -56,6 +63,7 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/ServerBrowser.swift` | Bonjour discovery of `_revitsync._tcp` |
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
 | `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor |
+| `RevitSync/ScanMesh.swift` | Live scene-reconstruction mesh as invisible occluders, plus the debug wireframe |
 | `RevitSync/ImmersiveView.swift` | Mixed immersive space and the drag / magnify / rotate gestures |
 | `RevitSync/ContentView.swift` | The control window |
 

@@ -113,10 +113,11 @@ struct ContentView: View {
             ForEach(model.projectRows) { project in
                 Button {
                     Task {
-                        await model.select(projectID: project.id)
+                        let selecting = Task { await model.select(projectID: project.id) }
                         if !model.immersiveOpen {
                             await openImmersiveSpace(id: AppModel.immersiveSpaceID)
                         }
+                        await selecting.value
                     }
                 } label: {
                     HStack {

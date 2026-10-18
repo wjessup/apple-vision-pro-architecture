@@ -16,6 +16,7 @@ struct ImmersiveView: View {
             content.add(scene.root)
             content.add(scene.scanMesh.root)
             scene.startTracking()
+            scene.resetPanel()
             if let panel = attachments.entity(for: "tools") {
                 content.add(panel)
                 panelUpdates = content.subscribe(to: SceneEvents.Update.self) { event in
@@ -27,6 +28,7 @@ struct ImmersiveView: View {
                 guard let label = attachments.entity(for: measurement.id),
                       let anchor = scene.labelAnchor(id: measurement.id),
                       label.parent !== anchor else { continue }
+                anchor.children.filter { $0 !== label }.forEach { $0.removeFromParent() }
                 label.components.set(BillboardComponent())
                 anchor.addChild(label)
             }
@@ -56,7 +58,7 @@ struct ImmersiveView: View {
         SpatialTapGesture()
             .targetedToEntity(scene.root)
             .onEnded { value in
-                guard scene.measuring else { return }
+                guard scene.measuring, isModelSurface(value.entity) else { return }
                 let point = value.convert(value.location3D, from: .local, to: .scene)
                 scene.addMeasurePoint(scene.root.convert(position: point, from: nil))
             }
@@ -116,6 +118,15 @@ struct ImmersiveView: View {
                 yawStart = nil
                 finishGesture()
             }
+    }
+
+    private func isModelSurface(_ entity: Entity) -> Bool {
+        var current: Entity? = entity
+        while let e = current {
+            if e === scene.model { return true }
+            current = e.parent
+        }
+        return false
     }
 
     private func finishGesture() {

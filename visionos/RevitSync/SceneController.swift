@@ -66,7 +66,7 @@ final class SceneController {
     private(set) var pendingPoint: SIMD3<Float>?
     var selectedMeasurement: UUID?
     private var locked = false
-    private var meshShapes: [String: [(entity: Entity, shape: ShapeResource)]] = [:]
+    private var meshShapes: [String: Task<[(entity: Entity, shape: ShapeResource)], Never>] = [:]
     private var measureEntities: [UUID: Entity] = [:]
     private let pendingDot: ModelEntity
     private static let measureMaterial = UnlitMaterial(color: .systemYellow)
@@ -158,31 +158,28 @@ final class SceneController {
     // instead of the whole-model box; the shapes are cached per partition load.
     private func refreshCollisionAsync() async {
         handle.isEnabled = !locked && !measuring
-        root.components[InputTargetComponent.self]?.isEnabled = !locked || measuring
         if measuring {
             root.components.remove(CollisionComponent.self)
-            preparingMeasure = true
             for (id, partition) in partitions where meshShapes[id] == nil {
-                var shapes: [(Entity, ShapeResource)] = []
-                for entity in Self.meshEntities(in: partition.entity) {
-                    guard let mesh = entity.components[ModelComponent.self]?.mesh,
-                          let shape = try? await ShapeResource.generateStaticMesh(from: mesh) else { continue }
-                    shapes.append((entity, shape))
-                }
-                meshShapes[id] = shapes
+                meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
             }
+            let tasks = meshShapes
+            preparingMeasure = true
+            var ready: [[(entity: Entity, shape: ShapeResource)]] = []
+            for task in tasks.values { ready.append(await task.value) }
             preparingMeasure = false
             guard measuring else { return }
-            for shapes in meshShapes.values {
-                for (entity, shape) in shapes {
+            for shapes in ready {
+                for (entity, shape) in shapes where entity.parent != nil {
                     entity.components.set(CollisionComponent(shapes: [shape], isStatic: true))
                 }
             }
             return
         }
-        for shapes in meshShapes.values {
-            for (entity, _) in shapes { entity.components.remove(CollisionComponent.self) }
+        for task in meshShapes.values {
+            for (entity, _) in await task.value { entity.components.remove(CollisionComponent.self) }
         }
+        guard !measuring else { return }
         guard mode == .basic else {
             root.components.remove(CollisionComponent.self)
             return
@@ -277,6 +274,16 @@ final class SceneController {
         }
     }
 
+    private static func staticShapes(for root: Entity) async -> [(entity: Entity, shape: ShapeResource)] {
+        var shapes: [(entity: Entity, shape: ShapeResource)] = []
+        for entity in meshEntities(in: root) {
+            guard let mesh = entity.components[ModelComponent.self]?.mesh,
+                  let shape = try? await ShapeResource.generateStaticMesh(from: mesh) else { continue }
+            shapes.append((entity, shape))
+        }
+        return shapes
+    }
+
     private static func meshEntities(in entity: Entity) -> [Entity] {
         var result = entity.components.has(ModelComponent.self) ? [entity] : []
         for child in entity.children { result += meshEntities(in: child) }
@@ -287,12 +294,14 @@ final class SceneController {
 
     // Lazy follow: the panel stays put while it is roughly in front of the user and only eases
     // back once it has drifted out of view or reach, avoiding head-locked UI.
+    func resetPanel() {
+        panelPlaced = false
+        panelMoving = false
+    }
+
     func updatePanel(_ panel: Entity, deltaTime: Float, follow: Bool) {
         guard let pose = devicePose() else {
-            if !panelPlaced {
-                panel.position = [0, 1.1, -0.6]
-                panelPlaced = true
-            }
+            if !panelPlaced { panel.position = [0, 1.1, -0.6] }
             return
         }
         let eye = SIMD3<Float>(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)

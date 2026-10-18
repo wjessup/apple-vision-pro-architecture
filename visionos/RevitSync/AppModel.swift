@@ -22,6 +22,13 @@ enum SyncPhase: Equatable {
     }
 }
 
+struct ProjectRow: Identifiable {
+    let id: String
+    let name: String
+    let revision: Int
+    let savedRevision: Int?
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -33,7 +40,10 @@ final class AppModel {
     var discovered: [DiscoveredServer] = []
     var connection: ConnectionState = .disconnected
     var projects: [ProjectSummary] = []
-    var selectedProjectID: String?
+    var selectedProjectID: String? = UserDefaults.standard.string(forKey: "selectedProject") {
+        didSet { UserDefaults.standard.set(selectedProjectID, forKey: "selectedProject") }
+    }
+    var library: [String: Manifest] = ModelLibrary.manifests()
     var manifest: Manifest?
     var loadedRevision: Int?
     var pendingRevision: Int?
@@ -62,6 +72,28 @@ final class AppModel {
     private var inFlightSync: Task<Void, Never>?
     private let browser = ServerBrowser()
 
+    init() {
+        if let id = selectedProjectID, library[id] != nil {
+            scene.activate(project: id)
+        } else {
+            selectedProjectID = nil
+            UserDefaults.standard.removeObject(forKey: "selectedProject")
+        }
+    }
+
+    var projectRows: [ProjectRow] {
+        var rows: [String: ProjectRow] = library.mapValues {
+            ProjectRow(id: $0.project, name: $0.name, revision: $0.revision, savedRevision: $0.revision)
+        }
+        if connection == .connected {
+            for project in projects {
+                rows[project.id] = ProjectRow(id: project.id, name: project.name, revision: project.revision,
+                                              savedRevision: library[project.id]?.revision)
+            }
+        }
+        return rows.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     func startDiscovery() {
         browser.start { [weak self] servers in
             self?.discovered = servers
@@ -77,13 +109,6 @@ final class AppModel {
         eventTask?.cancel()
         connection = .connecting
         lastError = nil
-        if self.client?.baseURL != base {
-            selectedProjectID = nil
-            manifest = nil
-            loadedRevision = nil
-            pendingRevision = nil
-            scene.clear()
-        }
         let client = SyncClient(baseURL: base)
         self.client = client
         do {
@@ -111,12 +136,16 @@ final class AppModel {
 
     func sync() async {
         await inFlightSync?.value
-        guard let client, let selectedProjectID else { return }
+        guard let selectedProjectID else { return }
         let task = Task {
             defer { phase = .idle }
             do {
-                let manifest = try await client.manifest(project: selectedProjectID)
-                try await apply(manifest, client: client)
+                if loadedRevision == nil, let saved = library[selectedProjectID] {
+                    try await apply(saved, client: nil)
+                }
+                if connection == .connected, let client, projects.contains(where: { $0.id == selectedProjectID }) {
+                    try await apply(try await client.manifest(project: selectedProjectID), client: client)
+                }
             } catch {
                 lastError = error.localizedDescription
             }
@@ -173,18 +202,26 @@ final class AppModel {
         }
     }
 
-    private func apply(_ manifest: Manifest, client: SyncClient) async throws {
+    private func apply(_ manifest: Manifest, client: SyncClient?) async throws {
         let before = scene.loadedPartitions
         let after = Set(manifest.partitions.map(\.id))
         for id in before.keys where !after.contains(id) {
             scene.remove(partitionID: id)
         }
         for partition in manifest.partitions where before[partition.id] != partition.sha256 {
-            phase = .downloading(partition.name)
-            let file = try await client.download(project: manifest.project, partition: partition)
+            let file = ModelLibrary.assetURL(project: manifest.project, partition: partition)
+            if !FileManager.default.fileExists(atPath: file.path) {
+                guard let client else {
+                    throw SyncError(message: "Connect to the server to download \(partition.name).")
+                }
+                phase = .downloading(partition.name)
+                try await client.download(project: manifest.project, partition: partition, to: file)
+            }
             phase = .loading(partition.name)
             try await scene.replace(partitionID: partition.id, sha256: partition.sha256, fileURL: file)
         }
+        try ModelLibrary.save(manifest)
+        library[manifest.project] = manifest
         phase = .idle
         self.manifest = manifest
         loadedRevision = manifest.revision

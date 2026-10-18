@@ -49,6 +49,7 @@ struct ImmersiveView: View {
         .onAppear { model.immersiveOpen = true }
         .onDisappear {
             model.immersiveOpen = false
+            scene.scanMesh.flushLive()
             scene.setMeasuring(false)
             panelUpdates?.cancel()
         }

@@ -57,6 +57,7 @@ final class SceneController {
     private(set) var mode = PlacementMode.basic
     private var pinTask: Task<Void, Never>?
     private(set) var project: String?
+    private var scanAnchorID: UUID?
     private var partitions: [String: (sha256: String, entity: Entity)] = [:]
     var isGesturing = false
 
@@ -114,6 +115,7 @@ final class SceneController {
 
     func activate(project: String) {
         guard self.project != project else { return }
+        scanMesh.flushLive()
         self.project = project
         clear()
         placement = Placement.load(project: project) ?? .tabletop
@@ -122,6 +124,10 @@ final class SceneController {
         selectedMeasurement = nil
         redrawMeasurements()
         applyPlacement()
+        let scan = ScanStore.load(project: project)
+        scanAnchorID = scan.anchorID
+        scanMesh.load(project: project, patches: scan.patches)
+        Task { await ensureScanAnchor() }
     }
 
     func replace(partitionID: String, sha256: String, fileURL: URL) async throws {
@@ -415,14 +421,65 @@ final class SceneController {
                     }
                 }
             }
+            Task {
+                // Providers pause while the immersive space is closed; a project picked or cleared
+                // in that state gets its scan anchor when tracking resumes.
+                for await event in session.events {
+                    if case .dataProviderStateChanged(_, .running, _) = event {
+                        await ensureScanAnchor()
+                    }
+                }
+            }
+            Task { await ensureScanAnchor() }
             for await update in worldTracking.anchorUpdates {
                 if case .removed = update.event { continue }
-                guard update.anchor.id == placement.anchorID, update.anchor.isTracked, !isGesturing else { continue }
+                guard update.anchor.isTracked else { continue }
                 let m = update.anchor.originFromAnchorTransform
+                if update.anchor.id == scanAnchorID {
+                    scanMesh.setAnchorTransform(m)
+                }
+                guard update.anchor.id == placement.anchorID, !isGesturing else { continue }
                 placement.position = [m.columns.3.x, m.columns.3.y, m.columns.3.z]
                 placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
                 applyPlacement()
             }
+        }
+    }
+
+    // MARK: Scan
+
+    /// Pins the project's scan anchor at the session origin the first time the project is scanned.
+    /// Remembered patches are stored relative to it, so visionOS re-locating the anchor in a later
+    /// session puts them back where they were.
+    private func ensureScanAnchor() async {
+        guard worldTracking.state == .running, let project else { return }
+        if let scanAnchorID {
+            // Switching back to a project whose anchor is already tracked produces no new update.
+            let known = await worldTracking.allAnchors?.first { $0.id == scanAnchorID }
+            guard self.project == project, self.scanAnchorID == scanAnchorID, let known, known.isTracked else { return }
+            scanMesh.setAnchorTransform(known.originFromAnchorTransform)
+            return
+        }
+        let anchor = WorldAnchor(originFromAnchorTransform: matrix_identity_float4x4)
+        guard (try? await worldTracking.addAnchor(anchor)) != nil else { return }
+        guard self.project == project, scanAnchorID == nil else {
+            try? await worldTracking.removeAnchor(forID: anchor.id)
+            return
+        }
+        scanAnchorID = anchor.id
+        ScanStore.saveAnchor(anchor.id, project: project)
+        scanMesh.setAnchorTransform(anchor.originFromAnchorTransform)
+    }
+
+    func clearScan() {
+        guard let project else { return }
+        ScanStore.clear(project: project)
+        scanMesh.clear()
+        let old = scanAnchorID
+        scanAnchorID = nil
+        Task {
+            if let old { try? await worldTracking.removeAnchor(forID: old) }
+            await ensureScanAnchor()
         }
     }
 

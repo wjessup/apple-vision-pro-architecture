@@ -5,6 +5,7 @@ struct ContentView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.scenePhase) private var scenePhase
+    @State private var confirmClearScan = false
 
     var body: some View {
         TabView {
@@ -190,11 +191,28 @@ struct ContentView: View {
 
     private var realWorldSection: some View {
         @Bindable var model = model
+        let scan = model.scene.scanMesh
         return Section("Real world") {
             Toggle("Show scan mesh", isOn: $model.showScanMesh)
-            Text("Trees, people and other real things the headset has scanned (within about 5 m) hide the parts of the model behind them. Turn this on to see the scan as a cyan wireframe.")
+            Label(scanStatus, systemImage: "square.grid.3x3")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Clear scan", role: .destructive) { confirmClearScan = true }
+                .disabled(scan.patchCount == 0)
+                .confirmationDialog("Clear the scan for this project?", isPresented: $confirmClearScan, titleVisibility: .visible) {
+                    Button("Clear scan", role: .destructive) { model.scene.clearScan() }
+                } message: {
+                    Text("Every patch kept for this project is deleted from the headset. Scanning starts again from where you are.")
+                }
+            Text("Trees, people and other real things the headset has scanned hide the parts of the model behind them. Patches you walk away from are kept and saved per project, so the scan grows to cover the whole property and comes back next time you open the project here. Turn this on to see the scan as a cyan wireframe; remembered patches are dimmer.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var scanStatus: String {
+        let scan = model.scene.scanMesh
+        let count = "\(scan.patchCount) patch\(scan.patchCount == 1 ? "" : "es") kept"
+        return scan.isAligned || scan.rememberedCount == 0 ? count : "\(count) · aligning to previous scan…"
     }
 }

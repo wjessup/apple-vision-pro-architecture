@@ -180,7 +180,7 @@ final class SceneController {
         model.addChild(entity)
         partitions[partitionID] = (sha256, entity, outline(of: entity))
         refreshCorners()
-        await refreshCollisionAsync()
+        refreshCollision()
     }
 
     func remove(partitionID: String) {
@@ -240,23 +240,23 @@ final class SceneController {
     // whole-model box: a real-size model's box encloses the user, and a gaze ray starting inside a
     // collider hits it at distance zero, stealing input from the tools panel and windows in front.
     // Each mesh also gets its own input target so a tap reports that mesh, not `root`.
+    private var meshCollidersWanted: Bool { measuring || (mode == .basic && !inputLocked) }
+
     private func refreshCollisionAsync() async {
         handle.isEnabled = !inputLocked && !measuring && mode != .corners
-        let wanted = measuring || (mode == .basic && !inputLocked)
-        if wanted {
+        if meshCollidersWanted {
             for (id, partition) in partitions where meshShapes[id] == nil {
                 meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
             }
         }
         let tasks = meshShapes
-        if measuring { preparingMeasure = true }
+        preparingMeasure = measuring
         var ready: [[(entity: Entity, shape: ShapeResource)]] = []
         for task in tasks.values { ready.append(await task.value) }
         preparingMeasure = false
-        let enabled = measuring || (mode == .basic && !inputLocked)
         for shapes in ready {
             for (entity, shape) in shapes {
-                if enabled, entity.parent != nil {
+                if meshCollidersWanted, entity.parent != nil {
                     entity.components.set(CollisionComponent(shapes: [shape], isStatic: true))
                     entity.components.set(InputTargetComponent())
                 } else {

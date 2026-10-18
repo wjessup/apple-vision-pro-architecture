@@ -8,7 +8,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
-    DEVELOPMENT_TEAM: "8X9UF936B2"
+    DEVELOPMENT_TEAM: "9X22T49B7A"
     CODE_SIGN_STYLE: "Automatic"
 targets:
   RevitSync:

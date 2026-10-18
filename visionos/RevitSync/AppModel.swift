@@ -66,16 +66,13 @@ final class AppModel {
 
     let scene = SceneController()
 
-    init() {
-        scene.setMode(placementMode)
-    }
-
     private var client: SyncClient?
     private var eventTask: Task<Void, Never>?
     private var inFlightSync: Task<Void, Never>?
     private let browser = ServerBrowser()
 
     init() {
+        scene.setMode(placementMode)
         if let id = selectedProjectID, library[id] != nil {
             scene.activate(project: id)
         } else {

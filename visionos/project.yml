@@ -19,6 +19,8 @@ targets:
       path: RevitSync/Info.plist
       properties:
         CFBundleDisplayName: Revit Sync
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
@@ -35,3 +37,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.yourcompany.RevitSync
         TARGETED_DEVICE_FAMILY: "7"
         ENABLE_PREVIEWS: YES
+        MARKETING_VERSION: "0.5.0"
+        CURRENT_PROJECT_VERSION: "5"

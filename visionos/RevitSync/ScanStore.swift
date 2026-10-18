@@ -1,18 +1,38 @@
 import Foundation
 
-/// One remembered scene-reconstruction patch. `transform` is column-major and relative to the
-/// project's scan world anchor, so the patch lands in the same place in a later session once
-/// visionOS has re-located that anchor.
-struct ScanPatch: Codable, Equatable {
+/// One world anchor pinning the project's scan frame to the room. `scanFromAnchor` is column-major
+/// and fixed at creation; visionOS re-locating any pin in a later session places the whole scan.
+struct ScanAnchorRecord: Codable, Equatable {
     var id: UUID
-    var transform: [Float]
-    var vertices: Data
-    var indices: Data
+    var scanFromAnchor: [Float]
 }
 
-/// Scans kept on the device, one directory per project beside `ModelLibrary.root`.
+/// One remembered grid cell. Vertices are in the scan frame; `owner` is the pin whose tracked pose
+/// places the cell on screen.
+struct ScanCellRecord: Codable, Equatable {
+    var owner: UUID
+    var vertices: Data
+    var indices: Data
+
+    init(owner: UUID, geometry: ScanGeometry) {
+        self.owner = owner
+        vertices = geometry.vertices
+        indices = geometry.indices
+    }
+
+    var geometry: ScanGeometry { ScanGeometry(vertices: vertices, indices: indices) }
+}
+
+/// Scans kept on the device, one directory per project beside `ModelLibrary.root`:
+/// `anchors.json` plus `cells/<ix>_<iy>_<iz>.cell`.
 enum ScanStore {
-    private struct AnchorFile: Codable {
+    struct Loaded {
+        var anchors: [ScanAnchorRecord] = []
+        var cells: [CellKey: ScanCellRecord] = [:]
+        var legacyAnchorID: UUID?
+    }
+
+    private struct LegacyAnchorFile: Codable {
         var anchorID: UUID
     }
 
@@ -26,34 +46,44 @@ enum ScanStore {
         return url
     }()
 
-    static func load(project: String) -> (anchorID: UUID?, patches: [ScanPatch]) {
+    /// A directory written by the single-anchor layout (`anchor.json` + `*.patch`) cannot be
+    /// converted, since its patches are only placed by that one anchor: it is removed, and its anchor
+    /// id handed back so the caller can drop the world anchor too.
+    static func load(project: String) -> Loaded {
         let dir = directory(project)
-        let anchorID = (try? Data(contentsOf: dir.appending(path: "anchor.json")))
-            .flatMap { try? JSONDecoder().decode(AnchorFile.self, from: $0) }?.anchorID
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        if files.contains(where: { $0.lastPathComponent == "anchor.json" || $0.pathExtension == "patch" }) {
+            let legacy = (try? Data(contentsOf: dir.appending(path: "anchor.json")))
+                .flatMap { try? JSONDecoder().decode(LegacyAnchorFile.self, from: $0) }?.anchorID
+            try? FileManager.default.removeItem(at: dir)
+            return Loaded(legacyAnchorID: legacy)
+        }
+        var loaded = Loaded()
+        loaded.anchors = (try? Data(contentsOf: dir.appending(path: "anchors.json")))
+            .flatMap { try? JSONDecoder().decode([ScanAnchorRecord].self, from: $0) } ?? []
+        let cellFiles = (try? FileManager.default.contentsOfDirectory(at: cells(project), includingPropertiesForKeys: nil)) ?? []
         let decoder = PropertyListDecoder()
-        let patches = files
-            .filter { $0.pathExtension == "patch" }
-            .compactMap { try? decoder.decode(ScanPatch.self, from: Data(contentsOf: $0)) }
-        return (anchorID, patches)
+        for file in cellFiles where file.pathExtension == "cell" {
+            guard let key = CellKey(fileName: file.deletingPathExtension().lastPathComponent),
+                  let data = try? Data(contentsOf: file),
+                  let record = try? decoder.decode(ScanCellRecord.self, from: data) else { continue }
+            loaded.cells[key] = record
+        }
+        return loaded
     }
 
-    static func save(_ patch: ScanPatch, project: String) {
+    static func saveAnchors(_ anchors: [ScanAnchorRecord], project: String) {
         let dir = directory(project)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? JSONEncoder().encode(anchors).write(to: dir.appending(path: "anchors.json"), options: .atomic)
+    }
+
+    static func save(_ cell: ScanCellRecord, key: CellKey, project: String) {
+        let dir = cells(project)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
-        try? encoder.encode(patch).write(to: dir.appending(path: "\(patch.id.uuidString).patch"), options: .atomic)
-    }
-
-    static func saveAnchor(_ id: UUID, project: String) {
-        let dir = directory(project)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? JSONEncoder().encode(AnchorFile(anchorID: id)).write(to: dir.appending(path: "anchor.json"), options: .atomic)
-    }
-
-    static func remove(id: UUID, project: String) {
-        try? FileManager.default.removeItem(at: directory(project).appending(path: "\(id.uuidString).patch"))
+        try? encoder.encode(cell).write(to: dir.appending(path: "\(key.fileName).cell"), options: .atomic)
     }
 
     static func clear(project: String) {
@@ -62,5 +92,9 @@ enum ScanStore {
 
     private static func directory(_ project: String) -> URL {
         root.appending(path: project, directoryHint: .isDirectory)
+    }
+
+    private static func cells(_ project: String) -> URL {
+        directory(project).appending(path: "cells", directoryHint: .isDirectory)
     }
 }

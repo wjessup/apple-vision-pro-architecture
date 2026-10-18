@@ -69,7 +69,9 @@ final class SceneController {
     private var inputLocked = false
     private var pinTask: Task<Void, Never>?
     private(set) var project: String?
-    private var scanAnchorID: UUID?
+    private var creatingScanAnchor = false
+    private var scanEpoch = 0
+    private var staleScanAnchors: [UUID] = []
     private var partitions: [String: (sha256: String, entity: Entity, outline: [SIMD3<Float>])] = [:]
     var isGesturing = false
     var scaleLocked = true
@@ -173,9 +175,10 @@ final class SceneController {
         applyPlacement()
         refreshCornerBalls()
         let scan = ScanStore.load(project: project)
-        scanAnchorID = scan.anchorID
-        scanMesh.load(project: project, patches: scan.patches)
-        Task { await ensureScanAnchor() }
+        if let legacy = scan.legacyAnchorID { staleScanAnchors.append(legacy) }
+        scanEpoch += 1
+        scanMesh.load(project: project, anchors: scan.anchors, cells: scan.cells)
+        Task { await ensureScanAnchors() }
     }
 
     func replace(partitionID: String, sha256: String, fileURL: URL) async throws {
@@ -593,26 +596,28 @@ final class SceneController {
                 Task {
                     for await update in sceneReconstruction.anchorUpdates {
                         await scanMesh.apply(update)
+                        maintainScanAnchors()
                     }
                 }
             }
             Task {
                 // Providers pause while the immersive space is closed; a project picked or cleared
-                // in that state gets its scan anchor when tracking resumes.
+                // in that state gets its scan pins when tracking resumes.
                 for await event in session.events {
                     if case .dataProviderStateChanged(_, .running, _) = event {
-                        await ensureScanAnchor()
+                        await ensureScanAnchors()
                     }
                 }
             }
-            Task { await ensureScanAnchor() }
+            Task { await ensureScanAnchors() }
             for await update in worldTracking.anchorUpdates {
                 if case .removed = update.event { continue }
-                guard update.anchor.isTracked else { continue }
                 let m = update.anchor.originFromAnchorTransform
-                if update.anchor.id == scanAnchorID {
-                    scanMesh.setAnchorTransform(m)
+                if scanMesh.hasAnchor(update.anchor.id) {
+                    scanMesh.anchorUpdated(update.anchor.id, originFromAnchor: m, tracked: update.anchor.isTracked)
+                    continue
                 }
+                guard update.anchor.isTracked else { continue }
                 guard update.anchor.id == placement.anchorID, !isGesturing else { continue }
                 placement.position = [m.columns.3.x, m.columns.3.y, m.columns.3.z]
                 placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
@@ -623,39 +628,71 @@ final class SceneController {
 
     // MARK: Scan
 
-    /// Pins the project's scan anchor at the session origin the first time the project is scanned.
-    /// Remembered patches are stored relative to it, so visionOS re-locating the anchor in a later
-    /// session puts them back where they were.
-    private func ensureScanAnchor() async {
-        guard worldTracking.state == .running, let project else { return }
-        if let scanAnchorID {
-            // Switching back to a project whose anchor is already tracked produces no new update.
-            let known = await worldTracking.allAnchors?.first { $0.id == scanAnchorID }
-            guard self.project == project, self.scanAnchorID == scanAnchorID, let known, known.isTracked else { return }
-            scanMesh.setAnchorTransform(known.originFromAnchorTransform)
+    private static let scanAnchorSpacing: Float = 3
+
+    /// Drops pins that no longer belong to any project, then re-reads the tracked state of the
+    /// current project's pins: switching back to a project whose pins are already tracked produces
+    /// no new update. A project without pins gets its first one at the wearer's position.
+    private func ensureScanAnchors() async {
+        guard worldTracking.state == .running, project != nil else { return }
+        let stale = staleScanAnchors
+        staleScanAnchors.removeAll()
+        for id in stale { try? await worldTracking.removeAnchor(forID: id) }
+        let ids = scanMesh.anchorIDs
+        guard !ids.isEmpty else {
+            maintainScanAnchors()
             return
         }
-        let anchor = WorldAnchor(originFromAnchorTransform: matrix_identity_float4x4)
-        guard (try? await worldTracking.addAnchor(anchor)) != nil else { return }
-        guard self.project == project, scanAnchorID == nil else {
-            try? await worldTracking.removeAnchor(forID: anchor.id)
-            return
+        guard let known = await worldTracking.allAnchors else { return }
+        for anchor in known where ids.contains(anchor.id) {
+            scanMesh.anchorUpdated(anchor.id, originFromAnchor: anchor.originFromAnchorTransform, tracked: anchor.isTracked)
         }
-        scanAnchorID = anchor.id
-        ScanStore.saveAnchor(anchor.id, project: project)
-        scanMesh.setAnchorTransform(anchor.originFromAnchorTransform)
+    }
+
+    /// Adds a pin when the project has none, or once the wearer is farther than the spacing from
+    /// every known pin, so no cell is far from the pin placing it. Only one add is in flight at a time.
+    private func maintainScanAnchors() {
+        guard !creatingScanAnchor, let planned = plannedScanAnchor() else { return }
+        creatingScanAnchor = true
+        let epoch = scanEpoch
+        let project = project
+        Task {
+            defer { creatingScanAnchor = false }
+            let anchor = WorldAnchor(originFromAnchorTransform: planned.originFromAnchor)
+            guard (try? await worldTracking.addAnchor(anchor)) != nil else { return }
+            guard self.project == project, scanEpoch == epoch else {
+                try? await worldTracking.removeAnchor(forID: anchor.id)
+                return
+            }
+            scanMesh.addAnchor(id: anchor.id, scanFromAnchor: planned.scanFromAnchor, originFromAnchor: planned.originFromAnchor)
+        }
+    }
+
+    /// The first pin defines the scan frame; later pins record where they sit in it, as estimated
+    /// from the tracked pin nearest the wearer, and never change.
+    private func plannedScanAnchor() -> (originFromAnchor: simd_float4x4, scanFromAnchor: simd_float4x4)? {
+        guard project != nil, let pose = devicePose() else { return nil }
+        let position = Self.translation(pose)
+        var originFromAnchor = matrix_identity_float4x4
+        originFromAnchor.columns.3 = SIMD4(position, 1)
+        if scanMesh.anchorIDs.isEmpty { return (originFromAnchor, matrix_identity_float4x4) }
+        guard let originFromScan = scanMesh.originFromScan(near: position),
+              scanMesh.anchorPositions.allSatisfy({ simd_distance($0, position) > Self.scanAnchorSpacing })
+        else { return nil }
+        return (originFromAnchor, originFromScan.inverse * originFromAnchor)
     }
 
     func clearScan() {
         guard let project else { return }
         ScanStore.clear(project: project)
+        staleScanAnchors += scanMesh.anchorIDs
+        scanEpoch += 1
         scanMesh.clear()
-        let old = scanAnchorID
-        scanAnchorID = nil
-        Task {
-            if let old { try? await worldTracking.removeAnchor(forID: old) }
-            await ensureScanAnchor()
-        }
+        Task { await ensureScanAnchors() }
+    }
+
+    private static func translation(_ m: simd_float4x4) -> SIMD3<Float> {
+        SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
     }
 
     private func devicePose() -> simd_float4x4? {

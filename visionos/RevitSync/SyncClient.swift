@@ -25,18 +25,13 @@ final class SyncClient {
         try await get(Manifest.self, path: "api/projects/\(project)/manifest")
     }
 
-    func download(project: String, partition: Partition) async throws -> URL {
-        let target = SyncClient.cacheURL(project: project, partition: partition)
-        if FileManager.default.fileExists(atPath: target.path) {
-            return target
-        }
+    func download(project: String, partition: Partition, to target: URL) async throws {
         let url = baseURL.appending(path: "api/projects/\(project)/").appending(path: partition.file)
         let (temp, response) = try await session.download(from: url)
         try Self.check(response, url: url)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: target)
         try FileManager.default.moveItem(at: temp, to: target)
-        return target
     }
 
     func events() -> AsyncThrowingStream<ServerEvent, Error> {
@@ -62,12 +57,6 @@ final class SyncClient {
                 task.cancel(with: .goingAway, reason: nil)
             }
         }
-    }
-
-    static func cacheURL(project: String, partition: Partition) -> URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appending(path: "models/\(project)")
-            .appending(path: "\(partition.sha256).\(partition.fileExtension)")
     }
 
     private func get<T: Decodable>(_ type: T.Type, path: String) async throws -> T {

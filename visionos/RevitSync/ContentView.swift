@@ -176,6 +176,8 @@ struct ContentView: View {
 
     private var placementSection: some View {
         @Bindable var model = model
+        let scene = model.scene
+        let cornerLocked = !scene.lockedCorners.isEmpty
         return Section("Placement") {
             Picker("Mode", selection: $model.placementMode) {
                 ForEach(PlacementMode.allCases) { mode in
@@ -195,16 +197,51 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .disabled(model.locked)
+            .disabled(model.locked || cornerLocked)
             if model.placementMode == .precise {
                 preciseControls.disabled(model.locked)
             }
+            if model.placementMode == .corners, scene.corners != nil {
+                cornerRows.disabled(model.locked)
+            }
             Toggle("Lock position", isOn: $model.locked)
-            Button("Place in front of me") { model.scene.placeInFrontOfUser() }
-                .disabled(model.locked || !model.immersiveOpen)
+            Button("Place in front of me") { scene.placeInFrontOfUser() }
+                .disabled(model.locked || cornerLocked || !model.immersiveOpen)
             Text(placementCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            DisclosureGroup("Advanced") {
+                Toggle("Allow free scaling", isOn: Binding(
+                    get: { !scene.scaleLocked },
+                    set: { scene.scaleLocked = !$0 }))
+                Text("Size normally stays at the scale chosen above. Turn this on to resize by pinching, with the scale slider, or by dragging a second corner.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var cornerRows: some View {
+        let scene = model.scene
+        return ForEach(Footprint.cornerNames.indices, id: \.self) { index in
+            let state = scene.cornerState(index)
+            HStack {
+                Image(systemName: "circle.fill").foregroundStyle(cornerColor(state))
+                Text(Footprint.cornerNames[index])
+                Text(state == .locked ? "Locked" : "Free").foregroundStyle(.secondary)
+                Spacer()
+                Button(state == .locked ? "Unlock" : "Lock") { scene.toggleCornerLock(index) }
+                    .buttonStyle(.bordered)
+                    .disabled(state == .unavailable)
+            }
+        }
+    }
+
+    private func cornerColor(_ state: CornerState) -> Color {
+        switch state {
+        case .free: .orange
+        case .locked: .green
+        case .unavailable: .gray
         }
     }
 
@@ -220,11 +257,35 @@ struct ContentView: View {
 
     private var placementCaption: String {
         if model.locked { return "Locked: pinches won't move the model." }
+        let scene = model.scene
+        let sizeHint = scene.scaleLocked && abs(scene.placement.scale - ScalePreset.full.rawValue) > 0.0001
+            ? " Choose 1:1 Real size to see it at full scale." : ""
         switch model.placementMode {
         case .basic:
-            return "Pinch and drag the blue handle or the model to move it. Pinch with both hands to scale or rotate."
+            return scene.scaleLocked
+                ? "Pinch and drag the blue handle or the model to move it. Pinch with both hands to rotate. Size stays at the scale above." + sizeHint
+                : "Pinch and drag the blue handle or the model to move it. Pinch with both hands to scale or rotate."
         case .precise:
-            return "Drag the blue handle to move the base point. Use the sliders to scale and rotate around it."
+            return scene.scaleLocked
+                ? "Drag the blue handle to move the base point. Use the slider to rotate around it." + sizeHint
+                : "Drag the blue handle to move the base point. Use the sliders to scale and rotate around it."
+        case .corners:
+            return cornerCaption + (scene.lockedCorners.isEmpty ? sizeHint : "")
+        }
+    }
+
+    private var cornerCaption: String {
+        let scene = model.scene
+        guard scene.corners != nil else { return "Load the model to find its corners." }
+        let locked = scene.lockedCorners.map { Footprint.cornerNames[$0] }
+        switch locked.count {
+        case 0:
+            return "Drag a corner onto its real-world spot, then tap it to lock."
+        case 1:
+            let motion = scene.scaleLocked ? "swing" : "swing and size"
+            return "\(locked[0]) is locked. Drag another corner to \(motion) the model around \(locked[0]), then tap it to lock."
+        default:
+            return "Locked by \(locked[0]) and \(locked[1]). Unlock a corner to adjust."
         }
     }
 
@@ -233,15 +294,17 @@ struct ContentView: View {
         let scene = model.scene
         VStack(alignment: .leading) {
             Text("Scale 1:\(String(format: "%.1f", 1 / scene.placement.scale))")
-            Slider(
-                value: Binding(
-                    get: { Double(log10(scene.placement.scale)) },
-                    set: { scene.setScale(Float(pow(10, $0))) }),
-                in: -3...0,
-                onEditingChanged: sliderEditing)
-            HStack {
-                stepButton("−1%") { scene.setScale(scene.placement.scale * 0.99) }
-                stepButton("+1%") { scene.setScale(scene.placement.scale * 1.01) }
+            if !scene.scaleLocked {
+                Slider(
+                    value: Binding(
+                        get: { Double(log10(scene.placement.scale)) },
+                        set: { scene.setScale(Float(pow(10, $0))) }),
+                    in: -3...0,
+                    onEditingChanged: sliderEditing)
+                HStack {
+                    stepButton("−1%") { scene.setScale(scene.placement.scale * 0.99) }
+                    stepButton("+1%") { scene.setScale(scene.placement.scale * 1.01) }
+                }
             }
         }
         VStack(alignment: .leading) {

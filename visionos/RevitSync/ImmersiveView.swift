@@ -24,6 +24,7 @@ struct ImmersiveView: View {
                 content.add(panel)
                 panelUpdates = content.subscribe(to: SceneEvents.Update.self) { event in
                     scene.updatePanel(panel, deltaTime: Float(event.deltaTime), follow: model.followMe)
+                    scene.updateCornerBallSize()
                 }
             }
         } update: { _, attachments in

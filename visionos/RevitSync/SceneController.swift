@@ -76,13 +76,19 @@ final class SceneController {
 
     static let scaleRange: ClosedRange<Float> = 0.001...1
 
-    private static let freeCornerMaterial = SimpleMaterial(color: .systemOrange, roughness: 0.3, isMetallic: false)
-    private static let lockedCornerMaterial = SimpleMaterial(color: .systemGreen, roughness: 0.3, isMetallic: false)
-    private static let unavailableCornerMaterial: UnlitMaterial = {
-        var material = UnlitMaterial(color: .systemGray)
-        material.blending = .transparent(opacity: 0.4)
+    private static let freeCornerMaterial = cornerMaterial(.systemOrange, opacity: 1)
+    private static let lockedCornerMaterial = cornerMaterial(.systemGreen, opacity: 1)
+    private static let unavailableCornerMaterial = cornerMaterial(.systemGray, opacity: 0.4)
+
+    // At real size a footprint corner sits inside the walls and usually below the real floor
+    // (footings), where the model and the scanned-room occluder would hide it, so corner balls
+    // skip the depth test and draw in the transparent pass, after opaque geometry.
+    private static func cornerMaterial(_ color: UIColor, opacity: Float) -> UnlitMaterial {
+        var material = UnlitMaterial(color: color)
+        material.blending = .transparent(opacity: .init(floatLiteral: opacity))
+        material.readsDepth = false
         return material
-    }()
+    }
 
     private(set) var measuring = false
     private(set) var preparingMeasure = false
@@ -126,7 +132,7 @@ final class SceneController {
             ball.components.set(InputTargetComponent())
             let text = ModelEntity(
                 mesh: .generateText(name, extrusionDepth: 0.002, font: .systemFont(ofSize: 0.05, weight: .bold)),
-                materials: [UnlitMaterial(color: .white)])
+                materials: [SceneController.cornerMaterial(.white, opacity: 1)])
             text.position.x = -text.visualBounds(relativeTo: text).center.x
             let label = Entity()
             label.position = [0, 0.06, 0]
@@ -486,6 +492,16 @@ final class SceneController {
         }
     }
 
+    // Balls keep their 8 cm size within 1.5 m of the user and grow linearly beyond it, so they
+    // cover a constant visual angle when the corners of a real-size model are far away.
+    func updateCornerBallSize() {
+        let eye = devicePose().map { SIMD3<Float>($0.columns.3.x, $0.columns.3.y, $0.columns.3.z) }
+        for ball in cornerBalls where ball.isEnabled || eye == nil {
+            let distance = eye.map { simd_distance(ball.position(relativeTo: nil), $0) } ?? 0
+            ball.scale = SIMD3<Float>(repeating: max(1, distance / 1.5) / placement.scale)
+        }
+    }
+
     func setPosition(_ position: SIMD3<Float>) {
         placement.position = position
         applyPlacement()
@@ -536,7 +552,7 @@ final class SceneController {
         handle.scale = SIMD3<Float>(repeating: 1 / placement.scale)
         pivotMarker.scale = SIMD3<Float>(repeating: 1 / placement.scale)
         applyMeasureScale()
-        cornerBalls.forEach { $0.scale = SIMD3<Float>(repeating: 1 / placement.scale) }
+        updateCornerBallSize()
         // Measurements are only taken and shown at real size.
         measureRoot.isEnabled = atRealSize
         if !atRealSize {

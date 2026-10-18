@@ -25,7 +25,9 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 
 1. **Server** — the PC running `revitsync` appears under *Server* via Bonjour; tap it. If it
    doesn't (client-isolated Wi-Fi), type the `http://<pc-ip>:8787` URL the server printed. The
-   first connection triggers the Local Network permission prompt — allow it.
+   first connection triggers the Local Network permission prompt — allow it. The app allows plain
+   HTTP (`NSAllowsArbitraryLoads` in `project.yml`) because the server lives on your own local
+   network and is reached by IP address, which App Transport Security would otherwise block.
 2. **Project** — pick the project (auto-selected when there is only one). It downloads and loads
    every level, then listens for `scene.updated`.
 3. **Show model in room** — opens the mixed immersive space. The model starts as a tabletop

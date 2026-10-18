@@ -7,24 +7,34 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        @Bindable var model = model
-        NavigationStack {
-            Form {
-                serverSection
-                if model.connection == .connected || !model.projectRows.isEmpty {
+        TabView {
+            NavigationStack {
+                Form {
                     projectSection
+                    if model.selectedProjectID != nil {
+                        revisionSection
+                        placementSection
+                    }
                 }
-                if model.selectedProjectID != nil {
-                    revisionSection
-                    placementSection
+                .navigationTitle("Projects")
+                .toolbar {
+                    ToolbarItem(placement: .bottomOrnament) {
+                        immersiveButton
+                    }
                 }
             }
-            .navigationTitle("Revit Sync")
-            .toolbar {
-                ToolbarItem(placement: .bottomOrnament) {
-                    immersiveButton
+            .tabItem { Label("Projects", systemImage: "building.2") }
+
+            NavigationStack {
+                Form {
+                    serverSection
+                    Section("About") {
+                        LabeledContent("Version", value: Self.appVersion)
+                    }
                 }
+                .navigationTitle("Connection")
             }
+            .tabItem { Label("Connection", systemImage: connectionIcon) }
         }
         .task { model.startDiscovery() }
         .task { await model.sync() }
@@ -34,6 +44,21 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, case .failed = model.connection else { return }
             Task { await model.connect() }
+        }
+    }
+
+    static let appVersion: String = {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }()
+
+    private var connectionIcon: String {
+        switch model.connection {
+        case .connected: "wifi"
+        case .connecting: "wifi.exclamationmark"
+        case .disconnected, .failed: "wifi.slash"
         }
     }
 
@@ -84,7 +109,9 @@ struct ContentView: View {
     private var projectSection: some View {
         Section {
             if model.projectRows.isEmpty {
-                Text("No projects yet. Press “View in Apple Vision Pro” in Revit, or run tools/push_model.py.")
+                Text(model.connection == .connected
+                     ? "No projects yet. Press “View in Apple Vision Pro” in Revit, or run tools/push_model.py."
+                     : "No models on this device yet. Connect to a server in the Connection tab.")
                     .foregroundStyle(.secondary)
             }
             ForEach(model.projectRows) { project in
@@ -107,7 +134,7 @@ struct ContentView: View {
             Text("Project")
         } footer: {
             if model.connection != .connected {
-                Text("Showing models saved on this device. Connect to the server to download new projects or updates.")
+                Text("Showing models saved on this device. Open the Connection tab to download new projects or updates.")
             }
         }
     }

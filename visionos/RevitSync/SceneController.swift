@@ -30,14 +30,30 @@ enum ScalePreset: Float, CaseIterable, Identifiable {
     }
 }
 
+enum PlacementMode: String, CaseIterable, Identifiable {
+    case basic
+    case precise
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .basic: "Basic"
+        case .precise: "Precise"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class SceneController {
     let root = Entity()
     let model = Entity()
     let handle: ModelEntity
+    let pivotMarker: ModelEntity
 
     private(set) var placement = Placement.tabletop
+    private(set) var mode = PlacementMode.basic
+    private var pinTask: Task<Void, Never>?
     private(set) var project: String?
     private var partitions: [String: (sha256: String, entity: Entity)] = [:]
     var isGesturing = false
@@ -56,11 +72,18 @@ final class SceneController {
         handle.position = [0, 1.2, 0]
         handle.generateCollisionShapes(recursive: false)
 
+        var ringMaterial = UnlitMaterial(color: .systemBlue)
+        ringMaterial.blending = .transparent(opacity: 0.5)
+        pivotMarker = ModelEntity(mesh: .generateCylinder(height: 0.002, radius: 0.25), materials: [ringMaterial])
+        pivotMarker.name = "pivotMarker"
+        pivotMarker.isEnabled = false
+
         root.name = "root"
         root.components.set(InputTargetComponent())
-        root.components.set(CollisionComponent(shapes: [.generateBox(size: [0.2, 0.2, 0.2])]))
         root.addChild(model)
         root.addChild(handle)
+        root.addChild(pivotMarker)
+        refreshCollision()
         applyPlacement()
     }
 
@@ -98,6 +121,10 @@ final class SceneController {
     var partitionCount: Int { partitions.count }
 
     private func refreshCollision() {
+        guard mode == .basic else {
+            root.components.remove(CollisionComponent.self)
+            return
+        }
         let bounds = model.visualBounds(relativeTo: root)
         let extents = simd_max(bounds.extents, SIMD3<Float>(repeating: 0.2))
         root.components.set(CollisionComponent(shapes: [
@@ -112,18 +139,24 @@ final class SceneController {
         root.components[InputTargetComponent.self]?.isEnabled = !locked
     }
 
+    func setMode(_ mode: PlacementMode) {
+        self.mode = mode
+        pivotMarker.isEnabled = mode == .precise
+        refreshCollision()
+    }
+
     func setPosition(_ position: SIMD3<Float>) {
         placement.position = position
         applyPlacement()
     }
 
     func setYaw(_ yaw: Float) {
-        placement.yaw = yaw
+        placement.yaw = Self.normalized(yaw)
         applyPlacement()
     }
 
     func setScale(_ scale: Float) {
-        placement.scale = min(max(scale, 0.001), 2)
+        placement.scale = min(max(scale, 0.001), 1)
         applyPlacement()
     }
 
@@ -141,7 +174,7 @@ final class SceneController {
         }
         position.y = placement.scale >= 0.5 ? 0 : 0.8
         placement.position = position
-        placement.yaw = yaw
+        placement.yaw = Self.normalized(yaw)
         applyPlacement()
         commitPlacement()
     }
@@ -149,7 +182,10 @@ final class SceneController {
     func commitPlacement() {
         guard let project else { return }
         placement.save(project: project)
-        Task { await pinWorldAnchor() }
+        pinTask = Task { [previous = pinTask] in
+            await previous?.value
+            await pinWorldAnchor()
+        }
     }
 
     private func applyPlacement() {
@@ -157,6 +193,12 @@ final class SceneController {
         root.orientation = simd_quatf(angle: placement.yaw, axis: [0, 1, 0])
         root.scale = SIMD3<Float>(repeating: placement.scale)
         handle.scale = SIMD3<Float>(repeating: 1 / placement.scale)
+        pivotMarker.scale = SIMD3<Float>(repeating: 1 / placement.scale)
+    }
+
+    private static func normalized(_ yaw: Float) -> Float {
+        let wrapped = remainder(yaw, 2 * .pi)
+        return wrapped <= -.pi ? wrapped + 2 * .pi : wrapped
     }
 
     // MARK: World tracking
@@ -174,7 +216,7 @@ final class SceneController {
                 guard update.anchor.id == placement.anchorID, update.anchor.isTracked, !isGesturing else { continue }
                 let m = update.anchor.originFromAnchorTransform
                 placement.position = [m.columns.3.x, m.columns.3.y, m.columns.3.z]
-                placement.yaw = atan2(m.columns.2.x, m.columns.2.z)
+                placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
                 applyPlacement()
             }
         }

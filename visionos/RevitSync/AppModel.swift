@@ -54,8 +54,18 @@ final class AppModel {
     var locked = false {
         didSet { scene.setLocked(locked) }
     }
+    var placementMode = PlacementMode(rawValue: UserDefaults.standard.string(forKey: "placementMode") ?? "") ?? .basic {
+        didSet {
+            UserDefaults.standard.set(placementMode.rawValue, forKey: "placementMode")
+            scene.setMode(placementMode)
+        }
+    }
 
     let scene = SceneController()
+
+    init() {
+        scene.setMode(placementMode)
+    }
 
     private var client: SyncClient?
     private var eventTask: Task<Void, Never>?

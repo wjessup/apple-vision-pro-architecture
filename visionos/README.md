@@ -33,17 +33,29 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 3. **Show model in room** — opens the mixed immersive space. The model starts as a tabletop
    (1:50) in front of you; the small blue sphere is a grab handle that stays the same size at any
    scale.
-4. **Placement** — two modes, chosen with the *Basic / Precise* switch (remembered across launches):
+4. **Placement** — three modes, chosen with the *Basic / Precise / Corners* switch (remembered
+   across launches). The size is locked to the *Scale* preset you pick, and gestures only move and
+   rotate the model. *Advanced → Allow free scaling* (off at every launch) re-enables pinch-to-scale,
+   the scale slider and scaling by corners.
    - **Basic:** pinch and drag the handle (or any part of the model) to move it; pinch with both
-     hands and pull apart / twist to scale and rotate around the vertical axis.
+     hands and twist to rotate around the vertical axis (pull apart to scale, with free scaling on).
    - **Precise:** for aligning large models exactly. Only the blue handle can be grabbed, so
      pinching the building does nothing, and dragging the handle moves the project base point,
-     which is marked by a ring on the floor. Scale (1:1000–1:1) and rotation (−180°–180°) are set
-     with sliders in the window, with ±1% and ±1° / ±0.1° step buttons and exact readouts. Both
-     pivot around the base point.
-   - *Scale* presets: 1:1, 1:20, 1:50, 1:100. Choosing 1:1 keeps the model's current origin, so
-     drag it until the project base point sits where you want the floor to be, or press
-     *Place in front of me* which drops the origin on the floor 1.5 m ahead.
+     which is marked by a ring on the floor. Rotation (−180°–180°) is set with a slider in the
+     window, with ±1° / ±0.1° step buttons and exact readouts; with free scaling on, a scale slider
+     (1:1000–1:1) with ±1% steps appears too. Both pivot around the base point.
+   - **Corners:** for lining the model up with a real site. Four orange balls, labelled NW, NE, SE
+     and SW, sit on the corners of the model's outline seen from above (the largest four-cornered
+     shape that fits its outline, so curved or angled lots still get their real corners). Drag a ball
+     onto its real-world spot to move the model, then tap it (or press *Lock* in the window) to lock
+     it; it turns green. Dragging a second ball now swings the model around the locked corner (and
+     sizes it, with free scaling on); tap to lock that too. With two corners locked the model can't
+     move, the other balls turn grey, and the locks are saved with the placement. Switching to
+     another mode releases the locks and leaves the model where it is.
+   - *Scale* presets: 1:1 Real size, 1:20, 1:50, 1:100. Choosing 1:1 keeps the model's current
+     origin, so drag it until the project base point sits where you want the floor to be, or press
+     *Place in front of me* which drops the origin on the floor 1.5 m ahead. Presets and *Place in
+     front of me* are disabled while a corner is locked.
    - *Lock position* disables all gestures so a presenter can't nudge it.
    - Placement is saved per project (position, rotation, scale) and also registered as an ARKit
      world anchor, so after a relaunch or a Digital-Crown recenter the model returns to the same
@@ -79,7 +91,8 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/ModelLibrary.swift` | On-device library: saved manifests + the assets they reference |
 | `RevitSync/ServerBrowser.swift` | Bonjour discovery of `_revitsync._tcp` |
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
-| `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor |
+| `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor, corner balls |
+| `RevitSync/Footprint.swift` | Plan-outline corner detection and the two-corner alignment solve (plain Swift) |
 | `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe; keeps and reloads patches the headset drops |
 | `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/` patches + anchor id |
 | `RevitSync/ImmersiveView.swift` | Mixed immersive space and the drag / magnify / rotate gestures |

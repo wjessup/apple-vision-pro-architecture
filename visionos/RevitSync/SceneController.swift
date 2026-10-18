@@ -9,6 +9,7 @@ struct Placement: Codable, Equatable {
     var yaw: Float
     var scale: Float
     var anchorID: UUID?
+    var lockedCorners: [Int]?
 
     static let tabletop = Placement(position: [0, 0.8, -1.0], yaw: 0, scale: ScalePreset.fiftieth.rawValue)
 }
@@ -22,7 +23,7 @@ enum ScalePreset: Float, CaseIterable, Identifiable {
     var id: Float { rawValue }
     var label: String {
         switch self {
-        case .full: "1:1"
+        case .full: "1:1 Real size"
         case .twentieth: "1:20"
         case .fiftieth: "1:50"
         case .hundredth: "1:100"
@@ -33,14 +34,22 @@ enum ScalePreset: Float, CaseIterable, Identifiable {
 enum PlacementMode: String, CaseIterable, Identifiable {
     case basic
     case precise
+    case corners
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .basic: "Basic"
         case .precise: "Precise"
+        case .corners: "Corners"
         }
     }
+}
+
+enum CornerState {
+    case free
+    case locked
+    case unavailable
 }
 
 @MainActor
@@ -50,15 +59,29 @@ final class SceneController {
     let model = Entity()
     let handle: ModelEntity
     let pivotMarker: ModelEntity
+    let cornerBalls: [ModelEntity]
     let scanMesh = ScanMesh()
 
     private(set) var placement = Placement.tabletop
     private(set) var mode = PlacementMode.basic
+    private(set) var corners: [SIMD3<Float>]?
+    private var inputLocked = false
     private var pinTask: Task<Void, Never>?
     private(set) var project: String?
     private var scanAnchorID: UUID?
-    private var partitions: [String: (sha256: String, entity: Entity)] = [:]
+    private var partitions: [String: (sha256: String, entity: Entity, outline: [SIMD3<Float>])] = [:]
     var isGesturing = false
+    var scaleLocked = true
+
+    static let scaleRange: ClosedRange<Float> = 0.001...1
+
+    private static let freeCornerMaterial = SimpleMaterial(color: .systemOrange, roughness: 0.3, isMetallic: false)
+    private static let lockedCornerMaterial = SimpleMaterial(color: .systemGreen, roughness: 0.3, isMetallic: false)
+    private static let unavailableCornerMaterial: UnlitMaterial = {
+        var material = UnlitMaterial(color: .systemGray)
+        material.blending = .transparent(opacity: 0.4)
+        return material
+    }()
 
     var loadedPartitions: [String: String] { partitions.mapValues(\.sha256) }
 
@@ -81,11 +104,30 @@ final class SceneController {
         pivotMarker.name = "pivotMarker"
         pivotMarker.isEnabled = false
 
+        cornerBalls = Footprint.cornerNames.map { name in
+            let ball = ModelEntity(mesh: .generateSphere(radius: 0.04), materials: [SceneController.freeCornerMaterial])
+            ball.name = "corner-\(name)"
+            ball.generateCollisionShapes(recursive: false)
+            ball.components.set(InputTargetComponent())
+            let text = ModelEntity(
+                mesh: .generateText(name, extrusionDepth: 0.002, font: .systemFont(ofSize: 0.05, weight: .bold)),
+                materials: [UnlitMaterial(color: .white)])
+            text.position.x = -text.visualBounds(relativeTo: text).center.x
+            let label = Entity()
+            label.position = [0, 0.06, 0]
+            label.components.set(BillboardComponent())
+            label.addChild(text)
+            ball.addChild(label)
+            ball.isEnabled = false
+            return ball
+        }
+
         root.name = "root"
         root.components.set(InputTargetComponent())
         root.addChild(model)
         root.addChild(handle)
         root.addChild(pivotMarker)
+        cornerBalls.forEach { root.addChild($0) }
         refreshCollision()
         applyPlacement()
     }
@@ -99,6 +141,7 @@ final class SceneController {
         clear()
         placement = Placement.load(project: project) ?? .tabletop
         applyPlacement()
+        refreshCornerBalls()
         let scan = ScanStore.load(project: project)
         scanAnchorID = scan.anchorID
         scanMesh.load(project: project, patches: scan.patches)
@@ -109,24 +152,58 @@ final class SceneController {
         let entity = try await Entity(contentsOf: fileURL)
         entity.name = partitionID
         partitions[partitionID]?.entity.removeFromParent()
-        partitions[partitionID] = (sha256, entity)
         model.addChild(entity)
+        partitions[partitionID] = (sha256, entity, outline(of: entity))
         refreshCollision()
+        refreshCorners()
     }
 
     func remove(partitionID: String) {
         partitions[partitionID]?.entity.removeFromParent()
         partitions[partitionID] = nil
         refreshCollision()
+        refreshCorners()
     }
 
     func clear() {
         partitions.values.forEach { $0.entity.removeFromParent() }
         partitions.removeAll()
         refreshCollision()
+        refreshCorners()
     }
 
     var partitionCount: Int { partitions.count }
+
+    private func outline(of entity: Entity) -> [SIMD3<Float>] {
+        var outline: [SIMD3<Float>] = []
+        var stack = [entity]
+        while let current = stack.popLast() {
+            stack.append(contentsOf: current.children)
+            guard let mesh = current.components[ModelComponent.self]?.mesh else { continue }
+            let toModel = current.transformMatrix(relativeTo: model)
+            let contents = mesh.contents
+            for instance in contents.instances {
+                guard let meshModel = contents.models[instance.model] else { continue }
+                let transform = toModel * instance.transform
+                for part in meshModel.parts {
+                    let points = part.positions.elements.map { p -> SIMD3<Float> in
+                        let q = transform * SIMD4(p, 1)
+                        return [q.x, q.y, q.z]
+                    }
+                    outline.append(contentsOf: Footprint.hull(points))
+                }
+            }
+        }
+        return Footprint.hull(outline)
+    }
+
+    private func refreshCorners() {
+        corners = Footprint.corners(of: partitions.values.flatMap(\.outline))
+        if let corners {
+            zip(cornerBalls, corners).forEach { $0.position = $1 }
+        }
+        refreshCornerBalls()
+    }
 
     private func refreshCollision() {
         guard mode == .basic else {
@@ -143,14 +220,85 @@ final class SceneController {
     // MARK: Placement
 
     func setLocked(_ locked: Bool) {
-        handle.isEnabled = !locked
+        inputLocked = locked
         root.components[InputTargetComponent.self]?.isEnabled = !locked
+        cornerBalls.forEach { $0.components[InputTargetComponent.self]?.isEnabled = !locked }
+        handle.isEnabled = !locked && mode != .corners
     }
 
     func setMode(_ mode: PlacementMode) {
         self.mode = mode
         pivotMarker.isEnabled = mode == .precise
+        handle.isEnabled = !inputLocked && mode != .corners
+        if mode != .corners, placement.lockedCorners != nil {
+            placement.lockedCorners = nil
+            commitPlacement()
+        }
         refreshCollision()
+        refreshCornerBalls()
+    }
+
+    // MARK: Corners
+
+    var lockedCorners: [Int] { placement.lockedCorners ?? [] }
+
+    func cornerState(_ index: Int) -> CornerState {
+        let locked = lockedCorners
+        if locked.contains(index) { return .locked }
+        return locked.count >= 2 ? .unavailable : .free
+    }
+
+    func cornerIndex(of entity: Entity) -> Int? {
+        cornerBalls.firstIndex { $0 === entity }
+    }
+
+    func cornerWorld(_ index: Int) -> SIMD3<Float>? {
+        guard let corners else { return nil }
+        return Footprint.world(corners[index], position: placement.position, yaw: placement.yaw, scale: placement.scale)
+    }
+
+    func toggleCornerLock(_ index: Int) {
+        guard corners != nil else { return }
+        var locked = lockedCorners
+        if let existing = locked.firstIndex(of: index) {
+            locked.remove(at: existing)
+        } else if locked.count < 2 {
+            locked.append(index)
+        } else {
+            return
+        }
+        placement.lockedCorners = locked.isEmpty ? nil : locked
+        refreshCornerBalls()
+        commitPlacement()
+    }
+
+    func dragCorner(_ index: Int, to target: SIMD3<Float>) {
+        guard let corners, cornerState(index) == .free, let current = cornerWorld(index) else { return }
+        if let anchor = lockedCorners.first, let anchorWorld = cornerWorld(anchor) {
+            let range = scaleLocked ? placement.scale...placement.scale : Self.scaleRange
+            guard let solved = Footprint.solveTwoPoint(
+                a: corners[anchor], aWorld: anchorWorld, b: corners[index], target: target, scaleRange: range)
+            else { return }
+            placement.position = solved.position
+            placement.yaw = Self.normalized(solved.yaw)
+            placement.scale = solved.scale
+        } else {
+            placement.position += target - current
+        }
+        applyPlacement()
+    }
+
+    private func refreshCornerBalls() {
+        let visible = mode == .corners && corners != nil
+        for (index, ball) in cornerBalls.enumerated() {
+            ball.isEnabled = visible
+            let material: any Material = switch cornerState(index) {
+            case .free: Self.freeCornerMaterial
+            case .locked: Self.lockedCornerMaterial
+            case .unavailable: Self.unavailableCornerMaterial
+            }
+            ball.model?.materials = [material]
+        }
     }
 
     func setPosition(_ position: SIMD3<Float>) {
@@ -164,7 +312,7 @@ final class SceneController {
     }
 
     func setScale(_ scale: Float) {
-        placement.scale = min(max(scale, 0.001), 1)
+        placement.scale = min(max(scale, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
         applyPlacement()
     }
 
@@ -202,6 +350,7 @@ final class SceneController {
         root.scale = SIMD3<Float>(repeating: placement.scale)
         handle.scale = SIMD3<Float>(repeating: 1 / placement.scale)
         pivotMarker.scale = SIMD3<Float>(repeating: 1 / placement.scale)
+        cornerBalls.forEach { $0.scale = SIMD3<Float>(repeating: 1 / placement.scale) }
     }
 
     private static func normalized(_ yaw: Float) -> Float {

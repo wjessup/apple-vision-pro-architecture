@@ -3,6 +3,8 @@ import SwiftUI
 
 struct ImmersiveView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var dragStart: SIMD3<Float>?
     @State private var draggedCorner: Int?
@@ -35,7 +37,13 @@ struct ImmersiveView: View {
             }
         } attachments: {
             Attachment(id: "tools") {
-                ToolsPanel().environment(model)
+                // visionOS can't move an open window, but a reopened one appears in front of the
+                // user. Attachments don't reliably inherit the scene's environment, so the window
+                // actions are captured here.
+                ToolsPanel(bringWindow: {
+                    dismissWindow(id: AppModel.mainWindowID)
+                    openWindow(id: AppModel.mainWindowID)
+                }).environment(model)
             }
             ForEach(scene.measurements) { measurement in
                 Attachment(id: measurement.id) {

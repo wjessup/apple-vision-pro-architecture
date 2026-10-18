@@ -237,7 +237,8 @@ final class SceneController {
     }
 
     // Measuring needs taps on the real surfaces, so each partition mesh gets an exact collider
-    // instead of the whole-model box; the shapes are cached per partition load.
+    // instead of the whole-model box; the shapes are cached per partition load. Each mesh also
+    // gets its own input target so the tap reports that mesh, not `root`, as its entity.
     private func refreshCollisionAsync() async {
         handle.isEnabled = !inputLocked && !measuring && mode != .corners
         if measuring {
@@ -254,12 +255,16 @@ final class SceneController {
             for shapes in ready {
                 for (entity, shape) in shapes where entity.parent != nil {
                     entity.components.set(CollisionComponent(shapes: [shape], isStatic: true))
+                    entity.components.set(InputTargetComponent())
                 }
             }
             return
         }
         for task in meshShapes.values {
-            for (entity, _) in await task.value { entity.components.remove(CollisionComponent.self) }
+            for (entity, _) in await task.value {
+                entity.components.remove(CollisionComponent.self)
+                entity.components.remove(InputTargetComponent.self)
+            }
         }
         guard !measuring else { return }
         guard mode == .basic else {
@@ -283,8 +288,10 @@ final class SceneController {
 
     // MARK: Measurements
 
+    var atRealSize: Bool { abs(placement.scale - ScalePreset.full.rawValue) < 0.0001 }
+
     func setMeasuring(_ measuring: Bool) {
-        self.measuring = measuring
+        self.measuring = measuring && atRealSize
         if !measuring { setPending(nil) }
         refreshCollision()
     }
@@ -541,6 +548,12 @@ final class SceneController {
         pivotMarker.scale = SIMD3<Float>(repeating: 1 / placement.scale)
         applyMeasureScale()
         cornerBalls.forEach { $0.scale = SIMD3<Float>(repeating: 1 / placement.scale) }
+        // Measurements are only taken and shown at real size.
+        measureRoot.isEnabled = atRealSize
+        if !atRealSize {
+            if selectedMeasurement != nil { selectedMeasurement = nil }
+            if measuring { setMeasuring(false) }
+        }
     }
 
     private static func normalized(_ yaw: Float) -> Float {

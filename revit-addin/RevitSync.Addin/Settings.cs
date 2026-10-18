@@ -1,12 +1,12 @@
 using System;
-using System.Drawing;
 using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Drawing = System.Drawing;
+using WinForms = System.Windows.Forms;
 
 namespace RevitSync
 {
@@ -65,7 +65,7 @@ namespace RevitSync
             var doc = data.Application.ActiveUIDocument?.Document;
             using (var form = new SettingsForm(settings, doc))
             {
-                if (form.ShowDialog() == DialogResult.OK)
+                if (form.ShowDialog() == WinForms.DialogResult.OK)
                 {
                     settings.Save();
                 }
@@ -74,24 +74,24 @@ namespace RevitSync
         }
     }
 
-    internal class SettingsForm : Form
+    internal class SettingsForm : WinForms.Form
     {
         public SettingsForm(Settings settings, Document doc)
         {
             Text = "Revit Sync settings";
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
-            StartPosition = FormStartPosition.CenterParent;
-            ClientSize = new Size(460, 230);
-            Font = new Font("Segoe UI", 9f);
+            StartPosition = WinForms.FormStartPosition.CenterParent;
+            ClientSize = new Drawing.Size(460, 230);
+            Font = new Drawing.Font("Segoe UI", 9f);
 
             var server = AddRow("Server URL", settings.ServerUrl, 15);
             var id = AddRow("Project id", settings.ProjectId, 60, doc == null ? "" : "blank = " + Settings.Slugify(Settings.ModelTitle(doc)));
             var name = AddRow("Project name", settings.ProjectName, 120, doc == null ? "" : "blank = " + Settings.ModelTitle(doc));
 
-            var ok = new Button { Text = "Save", DialogResult = DialogResult.OK, Location = new Point(280, 185), Size = new Size(80, 28) };
-            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(368, 185), Size = new Size(80, 28) };
+            var ok = new WinForms.Button { Text = "Save", DialogResult = WinForms.DialogResult.OK, Location = new Drawing.Point(280, 185), Size = new Drawing.Size(80, 28) };
+            var cancel = new WinForms.Button { Text = "Cancel", DialogResult = WinForms.DialogResult.Cancel, Location = new Drawing.Point(368, 185), Size = new Drawing.Size(80, 28) };
             ok.Click += (_, __) =>
             {
                 settings.ServerUrl = server.Text.Trim().TrimEnd('/');
@@ -104,14 +104,14 @@ namespace RevitSync
             CancelButton = cancel;
         }
 
-        private TextBox AddRow(string label, string value, int y, string hint = "")
+        private WinForms.TextBox AddRow(string label, string value, int y, string hint = "")
         {
-            Controls.Add(new Label { Text = label, Location = new Point(12, y + 4), AutoSize = true });
-            var box = new TextBox { Text = value, Location = new Point(110, y), Size = new Size(338, 24) };
+            Controls.Add(new WinForms.Label { Text = label, Location = new Drawing.Point(12, y + 4), AutoSize = true });
+            var box = new WinForms.TextBox { Text = value, Location = new Drawing.Point(110, y), Size = new Drawing.Size(338, 24) };
             Controls.Add(box);
             if (hint.Length > 0)
             {
-                Controls.Add(new Label { Text = hint, Location = new Point(110, y + 24), AutoSize = true, ForeColor = SystemColors.GrayText });
+                Controls.Add(new WinForms.Label { Text = hint, Location = new Drawing.Point(110, y + 24), AutoSize = true, ForeColor = Drawing.SystemColors.GrayText });
             }
             return box;
         }

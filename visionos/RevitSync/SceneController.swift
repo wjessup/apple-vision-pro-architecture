@@ -9,6 +9,7 @@ struct Placement: Codable, Equatable {
     var yaw: Float
     var scale: Float
     var anchorID: UUID?
+    var lockedCorners: [Int]?
 
     static let tabletop = Placement(position: [0, 0.8, -1.0], yaw: 0, scale: ScalePreset.fiftieth.rawValue)
 }
@@ -33,14 +34,22 @@ enum ScalePreset: Float, CaseIterable, Identifiable {
 enum PlacementMode: String, CaseIterable, Identifiable {
     case basic
     case precise
+    case corners
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .basic: "Basic"
         case .precise: "Precise"
+        case .corners: "Corners"
         }
     }
+}
+
+enum CornerState {
+    case free
+    case locked
+    case unavailable
 }
 
 @MainActor

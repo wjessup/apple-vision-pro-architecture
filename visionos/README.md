@@ -64,21 +64,27 @@ to a server on the same Mac works there, but world anchors and hand gestures are
      front of me* are disabled while a corner is locked.
    - *Lock position* disables the move / scale / rotate and corner gestures so a presenter can't
      nudge it; measuring still works.
-   - Placement is saved per project (position, rotation, scale) and also registered as an ARKit
-     world anchor, so after a relaunch or a Digital-Crown recenter the model returns to the same
-     spot in the room. The first time, visionOS asks for World Sensing permission.
+   - Placement (position, rotation, scale, corner locks) is shared by every model: they are all
+     the same house on the same property, so switching models swaps the building in place and
+     moving any one moves them all. It is registered as an ARKit world anchor, so after a relaunch
+     or a Digital-Crown recenter the model returns to the same spot in the room. The first time,
+     visionOS asks for World Sensing permission.
+   - Each model's corners come from its ground floor alone (its plan cut 1 m above level 0), so a
+     basement or footing reaching past the walls doesn't move them. If a model's corners are more
+     than a foot from those of the model placed last, the Placement section warns that it doesn't
+     match the house; it still opens at the shared spot. That usually means its Revit file uses a
+     different project base point.
 5. **Real world** — while the model is shown, the headset continuously scans what's around you
    and hides any part of the model that sits behind a real object: a tree, a fence, a person.
    The headset only scans about 5 m around you (less in bright sun), and foliage is captured as
    coarse solid shapes, so close trees hide a rough lump rather than leaf-by-leaf. Pieces you
    walk away from are kept rather than dropped, so walking the property builds up a scan of all
-   of it; it is saved on the headset per project, pinned to the room every few metres as you
-   walk, and comes back the next time you open that project as soon as visionOS recognises any
+   of it; it is saved on the headset once for the whole property and shared by every model,
+   pinned to the room every few metres as you walk, and comes back the next time as soon as visionOS recognises any
    of those spots (the *Real world* section says *aligning to previous scan…* until then).
    Walking back over an area shows the fresh scan in place of the kept pieces it covers and
    replaces them once you move on; nothing kept is dropped before its replacement is saved.
-   *Clear scan* throws the project's scan away — use it when you scan a different site under
-   the same project or the place has changed a lot. *Show scan mesh* draws the scan as a cyan
+   *Clear scan* throws the scan away — use it when the place has changed a lot. *Show scan mesh* draws the scan as a cyan
    wireframe so you can see what is doing the hiding; remembered pieces are dimmer.
    The scan also hides the app's own window if it ends up behind a real object. The visionOS
    Simulator has no scan, so there nothing is hidden.

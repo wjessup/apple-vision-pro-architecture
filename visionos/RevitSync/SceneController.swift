@@ -11,6 +11,8 @@ struct Placement: Codable, Equatable {
     var scale: Float
     var anchorID: UUID?
     var lockedCorners: [Int]?
+    /// Ground-floor corners (model space) of the model this placement was set with.
+    var footprint: [SIMD3<Float>]?
 
     static let tabletop = Placement(position: [0, 0.8, -1.0], yaw: 0, scale: ScalePreset.fiftieth.rawValue)
 }
@@ -67,6 +69,8 @@ final class SceneController {
     private(set) var placement = Placement.tabletop
     private(set) var mode = PlacementMode.basic
     private(set) var corners: [SIMD3<Float>]?
+    /// The loaded model's ground-floor corners are more than a foot from the placed house's.
+    private(set) var footprintMismatch = false
     private var inputLocked = false
     private var pinTask: Task<Void, Never>?
     private(set) var project: String?
@@ -83,8 +87,8 @@ final class SceneController {
     private static let lockedCornerMaterial = cornerMaterial(.systemGreen, opacity: 1)
     private static let unavailableCornerMaterial = cornerMaterial(.systemGray, opacity: 0.4)
 
-    // At real size a footprint corner sits inside the walls and usually below the real floor
-    // (footings), where the model and the scanned-room occluder would hide it, so corner balls
+    // At real size a footprint corner sits inside the walls at floor level, where the model and the
+    // scanned-room occluder would hide it, so corner balls
     // skip the depth test and draw in the transparent pass, after opaque geometry.
     private static func cornerMaterial(_ color: UIColor, opacity: Float) -> UnlitMaterial {
         var material = UnlitMaterial(color: color)
@@ -134,7 +138,9 @@ final class SceneController {
     private let sceneReconstruction = SceneReconstructionProvider()
     private var trackingTask: Task<Void, Never>?
 
-    init() {
+    init(legacyProject: String?) {
+        Self.adoptLegacySite(keeping: legacyProject)
+        placement = Placement.load() ?? .tabletop
         handle = ModelEntity(
             mesh: .generateSphere(radius: 0.035),
             materials: [SimpleMaterial(color: .systemBlue, roughness: 0.3, isMetallic: false)])
@@ -182,26 +188,42 @@ final class SceneController {
         root.addChild(measureRoot)
         refreshCollision()
         applyPlacement()
+        let scan = ScanStore.load()
+        scanMesh.load(anchors: scan.anchors, cells: scan.cells)
+    }
+
+    /// Placement and scan used to be kept per model. On first launch after they became site-wide,
+    /// the selected model's are kept and every other model's world anchors are released.
+    private static func adoptLegacySite(keeping project: String?) {
+        let defaults = UserDefaults.standard
+        guard defaults.data(forKey: Placement.key) == nil,
+              !FileManager.default.fileExists(atPath: ScanStore.directory.path) else { return }
+        if let project, let data = defaults.data(forKey: "\(Placement.key).\(project)") {
+            defaults.set(data, forKey: Placement.key)
+        }
+        var stale: [UUID] = []
+        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix("\(Placement.key).") {
+            if key != "\(Placement.key).\(project ?? "")", let data = value as? Data,
+               let id = (try? JSONDecoder().decode(Placement.self, from: data))?.anchorID {
+                stale.append(id)
+            }
+            defaults.removeObject(forKey: key)
+        }
+        ScanStore.addStaleAnchors(stale)
+        ScanStore.adoptLegacyScans(keeping: project)
     }
 
     // MARK: Partitions
 
     func activate(project: String) {
         guard self.project != project else { return }
-        scanMesh.flushLive()
         self.project = project
         clear()
-        placement = Placement.load(project: project) ?? .tabletop
         measurements = .load(project: project)
         setPending(nil)
         selectedMeasurement = nil
         redrawMeasurements()
         applyPlacement()
-        refreshCornerBalls()
-        let scan = ScanStore.load(project: project)
-        scanEpoch += 1
-        scanMesh.load(project: project, anchors: scan.anchors, cells: scan.cells)
-        Task { await ensureScanAnchors() }
     }
 
     func replace(partitionID: String, sha256: String, fileURL: URL) async throws {
@@ -272,9 +294,29 @@ final class SceneController {
         var stack = [entity]
         while let current = stack.popLast() {
             stack.append(contentsOf: current.children)
-            outline.append(contentsOf: Footprint.hull(modelPoints(of: current)))
+            outline.append(contentsOf: Footprint.hull(groundSection(of: current)))
         }
         return Footprint.hull(outline)
+    }
+
+    private func groundSection(of entity: Entity) -> [SIMD3<Float>] {
+        guard let mesh = entity.components[ModelComponent.self]?.mesh else { return [] }
+        let toModel = entity.transformMatrix(relativeTo: model)
+        let contents = mesh.contents
+        var points: [SIMD3<Float>] = []
+        for instance in contents.instances {
+            guard let meshModel = contents.models[instance.model] else { continue }
+            let transform = toModel * instance.transform
+            for part in meshModel.parts {
+                guard let indices = part.triangleIndices?.elements else { continue }
+                let positions = part.positions.elements.map { p -> SIMD3<Float> in
+                    let q = transform * SIMD4(p, 1)
+                    return [q.x, q.y, q.z]
+                }
+                points.append(contentsOf: Footprint.groundSection(positions: positions, indices: indices))
+            }
+        }
+        return points
     }
 
     /// Model-space positions of one entity's own mesh (not its children's).
@@ -300,6 +342,14 @@ final class SceneController {
         corners = Footprint.corners(of: partitions.values.flatMap(\.outline))
         if let corners {
             zip(cornerBalls, corners).forEach { $0.position = $1 }
+            if let house = placement.footprint {
+                footprintMismatch = !Footprint.sameHouse(corners, house)
+            } else {
+                placement.footprint = corners
+                placement.save()
+            }
+        } else {
+            footprintMismatch = false
         }
         refreshCornerBalls()
     }
@@ -620,8 +670,12 @@ final class SceneController {
     }
 
     func commitPlacement() {
-        guard let project else { return }
-        placement.save(project: project)
+        // The model placed last is the house every other model is checked against.
+        if let corners {
+            placement.footprint = corners
+            footprintMismatch = false
+        }
+        placement.save()
         pushVoids()
         pinTask = Task { [previous = pinTask] in
             await previous?.value
@@ -669,8 +723,8 @@ final class SceneController {
                 }
             }
             Task {
-                // Providers pause while the immersive space is closed; a project picked or cleared
-                // in that state gets its scan pins when tracking resumes.
+                // Providers pause while the immersive space is closed; a scan cleared in that state
+                // gets its first pin when tracking resumes.
                 for await event in session.events {
                     if case .dataProviderStateChanged(_, .running, _) = event {
                         await ensureScanAnchors()
@@ -700,11 +754,11 @@ final class SceneController {
 
     private static let scanAnchorSpacing: Float = 3
 
-    /// Drops pins that no longer belong to any project, then re-reads the tracked state of the
-    /// current project's pins: switching back to a project whose pins are already tracked produces
-    /// no new update. A project without pins gets its first one at the wearer's position.
+    /// Drops world anchors that no longer place anything, then re-reads the tracked state of the
+    /// scan pins, which may already be tracked and produce no new update. A scan without pins gets
+    /// its first one at the wearer's position.
     private func ensureScanAnchors() async {
-        guard worldTracking.state == .running, project != nil else { return }
+        guard worldTracking.state == .running else { return }
         let stale = ScanStore.staleAnchors()
         for id in stale { try? await worldTracking.removeAnchor(forID: id) }
         ScanStore.setStaleAnchors(ScanStore.staleAnchors().filter { !stale.contains($0) })
@@ -720,14 +774,13 @@ final class SceneController {
         }
     }
 
-    /// Adds a pin when the project has none, or once the wearer is farther than the spacing from
+    /// Adds a pin when the scan has none, or once the wearer is farther than the spacing from
     /// every known pin, so no cell is far from the pin placing it. Only one add is in flight at a
-    /// time, and a refused add is not retried until tracking next resumes or the project changes.
+    /// time, and a refused add is not retried until tracking next resumes or the scan is cleared.
     private func maintainScanAnchors() {
         guard !creatingScanAnchor, !scanAnchorAddFailed, let planned = plannedScanAnchor() else { return }
         creatingScanAnchor = true
         let epoch = scanEpoch
-        let project = project
         Task {
             defer { creatingScanAnchor = false }
             let anchor = WorldAnchor(originFromAnchorTransform: planned.originFromAnchor)
@@ -735,7 +788,7 @@ final class SceneController {
                 scanAnchorAddFailed = true
                 return
             }
-            guard self.project == project, scanEpoch == epoch else {
+            guard scanEpoch == epoch else {
                 try? await worldTracking.removeAnchor(forID: anchor.id)
                 return
             }
@@ -746,7 +799,7 @@ final class SceneController {
     /// The first pin defines the scan frame; later pins record where they sit in it, as estimated
     /// from the tracked pin nearest the wearer, and never change.
     private func plannedScanAnchor() -> (originFromAnchor: simd_float4x4, scanFromAnchor: simd_float4x4)? {
-        guard project != nil, let pose = devicePose() else { return nil }
+        guard let pose = devicePose() else { return nil }
         let position = Self.translation(pose)
         var originFromAnchor = matrix_identity_float4x4
         originFromAnchor.columns.3 = SIMD4(position, 1)
@@ -758,8 +811,7 @@ final class SceneController {
     }
 
     func clearScan() {
-        guard let project else { return }
-        ScanStore.clear(project: project)
+        ScanStore.clear()
         ScanStore.addStaleAnchors(scanMesh.anchorIDs)
         scanEpoch += 1
         scanMesh.clear()
@@ -776,7 +828,7 @@ final class SceneController {
     }
 
     private func pinWorldAnchor() async {
-        guard worldTracking.state == .running, let project else { return }
+        guard worldTracking.state == .running else { return }
         let old = placement.anchorID
         placement.anchorID = nil
         var transform = matrix_identity_float4x4
@@ -795,19 +847,20 @@ final class SceneController {
         } catch {
             placement.anchorID = nil
         }
-        placement.save(project: project)
+        placement.save()
     }
 }
 
 extension Placement {
-    private static func key(_ project: String) -> String { "placement.\(project)" }
+    /// One placement for the property, shared by every model.
+    static let key = "placement"
 
-    static func load(project: String) -> Placement? {
-        guard let data = UserDefaults.standard.data(forKey: key(project)) else { return nil }
+    static func load() -> Placement? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(Placement.self, from: data)
     }
 
-    func save(project: String) {
-        UserDefaults.standard.set(try? JSONEncoder().encode(self), forKey: Self.key(project))
+    func save() {
+        UserDefaults.standard.set(try? JSONEncoder().encode(self), forKey: Self.key)
     }
 }

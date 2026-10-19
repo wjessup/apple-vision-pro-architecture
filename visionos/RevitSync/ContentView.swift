@@ -175,6 +175,10 @@ struct ContentView: View {
     private var placementSection: some View {
         @Bindable var model = model
         return Section("Placement") {
+            if model.scene.footprintMismatch {
+                Label("This model's ground-floor corners are more than a foot from the house you placed. It is shown at the same spot anyway; check that its Revit file uses the same project base point.", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
             PlacementControls()
             Toggle("Tools panel follows me", isOn: $model.followMe)
             if model.immersiveOpen {
@@ -195,12 +199,12 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
             Button("Clear scan", role: .destructive) { confirmClearScan = true }
                 .disabled(scan.patchCount == 0)
-                .confirmationDialog("Clear the scan for this project?", isPresented: $confirmClearScan, titleVisibility: .visible) {
+                .confirmationDialog("Clear the scan of the property?", isPresented: $confirmClearScan, titleVisibility: .visible) {
                     Button("Clear scan", role: .destructive) { model.scene.clearScan() }
                 } message: {
-                    Text("Every piece kept for this project is deleted from the headset. Scanning starts again from where you are.")
+                    Text("Every piece kept is deleted from the headset, for every model. Scanning starts again from where you are.")
                 }
-            Text("Trees, people and other real things the headset has scanned hide the parts of the model behind them. Pieces you walk away from are kept and saved per project, so the scan grows to cover the whole property and comes back next time you open the project here, wherever you start. Turn this on to see the scan as a cyan wireframe; remembered pieces are dimmer.")
+            Text("Trees, people and other real things the headset has scanned hide the parts of the model behind them. Pieces you walk away from are kept and saved on the headset, so the scan grows to cover the whole property and comes back next time, wherever you start. Every model shares this scan and the same placement on the property. Turn this on to see the scan as a cyan wireframe; remembered pieces are dimmer.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

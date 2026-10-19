@@ -401,14 +401,14 @@ final class SceneController {
     // whole-model box: a real-size model's box encloses the user, and a gaze ray starting inside a
     // collider hits it at distance zero, stealing input from the tools panel and windows in front.
     // Each mesh also gets its own input target so a tap reports that mesh, not `root`.
+    // Shapes are generated as soon as a partition loads, not when a tool first needs them, so
+    // turning the ruler on is instant instead of waiting on the whole model.
     private var meshCollidersWanted: Bool { toolActive || (mode == .basic && !inputLocked) }
 
     private func refreshCollisionAsync() async {
         handle.isEnabled = !inputLocked && !toolActive && mode != .corners
-        if meshCollidersWanted {
-            for (id, partition) in partitions where meshShapes[id] == nil {
-                meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
-            }
+        for (id, partition) in partitions where meshShapes[id] == nil {
+            meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
         }
         let tasks = meshShapes
         var ready: [[(entity: Entity, shape: ShapeResource)]] = []

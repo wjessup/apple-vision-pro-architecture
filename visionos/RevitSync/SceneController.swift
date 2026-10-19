@@ -72,7 +72,7 @@ final class SceneController {
     private var creatingScanAnchor = false
     private var scanAnchorAddFailed = false
     private var scanEpoch = 0
-    private var partitions: [String: (sha256: String, entity: Entity, outline: [SIMD3<Float>])] = [:]
+    private var partitions: [String: (sha256: String, entity: Entity, outline: [SIMD3<Float>], voids: [Footprint.Void])] = [:]
     var isGesturing = false
     var scaleLocked = true
 
@@ -186,9 +186,11 @@ final class SceneController {
         partitions[partitionID]?.entity.removeFromParent()
         meshShapes[partitionID] = nil
         model.addChild(entity)
-        partitions[partitionID] = (sha256, entity, outline(of: entity))
+        let voids = extractVoids(from: entity)
+        partitions[partitionID] = (sha256, entity, outline(of: entity), voids)
         refreshCorners()
         refreshCollision()
+        pushVoids()
     }
 
     func remove(partitionID: String) {
@@ -197,6 +199,7 @@ final class SceneController {
         meshShapes[partitionID] = nil
         refreshCollision()
         refreshCorners()
+        pushVoids()
     }
 
     func clear() {
@@ -205,31 +208,68 @@ final class SceneController {
         meshShapes.removeAll()
         refreshCollision()
         refreshCorners()
+        pushVoids()
     }
 
     var partitionCount: Int { partitions.count }
+
+    /// Void prims (`void_*`) are invisible volumes exported only to cut the room scan; they leave the
+    /// tree before the outline and colliders are built so they never widen the footprint or take taps.
+    private func extractVoids(from entity: Entity) -> [Footprint.Void] {
+        var found: [Entity] = []
+        var stack = [entity]
+        while let current = stack.popLast() {
+            if current.name.hasPrefix("void_") {
+                found.append(current)
+            } else {
+                stack.append(contentsOf: current.children)
+            }
+        }
+        let voids = found.compactMap { void -> Footprint.Void? in
+            var points: [SIMD3<Float>] = []
+            var stack = [void]
+            while let current = stack.popLast() {
+                stack.append(contentsOf: current.children)
+                points.append(contentsOf: modelPoints(of: current))
+            }
+            guard let top = points.map(\.y).max() else { return nil }
+            return Footprint.Void(outline: Footprint.hull(points), top: top)
+        }
+        found.forEach { $0.removeFromParent() }
+        return voids
+    }
+
+    private func pushVoids() {
+        scanMesh.setVoids(partitions.values.flatMap(\.voids), worldFromModel: model.transformMatrix(relativeTo: nil))
+    }
 
     private func outline(of entity: Entity) -> [SIMD3<Float>] {
         var outline: [SIMD3<Float>] = []
         var stack = [entity]
         while let current = stack.popLast() {
             stack.append(contentsOf: current.children)
-            guard let mesh = current.components[ModelComponent.self]?.mesh else { continue }
-            let toModel = current.transformMatrix(relativeTo: model)
-            let contents = mesh.contents
-            for instance in contents.instances {
-                guard let meshModel = contents.models[instance.model] else { continue }
-                let transform = toModel * instance.transform
-                for part in meshModel.parts {
-                    let points = part.positions.elements.map { p -> SIMD3<Float> in
-                        let q = transform * SIMD4(p, 1)
-                        return [q.x, q.y, q.z]
-                    }
-                    outline.append(contentsOf: Footprint.hull(points))
-                }
-            }
+            outline.append(contentsOf: Footprint.hull(modelPoints(of: current)))
         }
         return Footprint.hull(outline)
+    }
+
+    /// Model-space positions of one entity's own mesh (not its children's).
+    private func modelPoints(of entity: Entity) -> [SIMD3<Float>] {
+        guard let mesh = entity.components[ModelComponent.self]?.mesh else { return [] }
+        let toModel = entity.transformMatrix(relativeTo: model)
+        let contents = mesh.contents
+        var points: [SIMD3<Float>] = []
+        for instance in contents.instances {
+            guard let meshModel = contents.models[instance.model] else { continue }
+            let transform = toModel * instance.transform
+            for part in meshModel.parts {
+                points.append(contentsOf: part.positions.elements.map { p -> SIMD3<Float> in
+                    let q = transform * SIMD4(p, 1)
+                    return [q.x, q.y, q.z]
+                })
+            }
+        }
+        return points
     }
 
     private func refreshCorners() {
@@ -541,6 +581,7 @@ final class SceneController {
     func commitPlacement() {
         guard let project else { return }
         placement.save(project: project)
+        pushVoids()
         pinTask = Task { [previous = pinTask] in
             await previous?.value
             await pinWorldAnchor()
@@ -611,6 +652,7 @@ final class SceneController {
                 placement.position = [m.columns.3.x, m.columns.3.y, m.columns.3.z]
                 placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
                 applyPlacement()
+                pushVoids()
             }
         }
     }

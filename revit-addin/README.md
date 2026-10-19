@@ -1,10 +1,19 @@
 # Revit add-in: "View in Apple Vision Pro"
 
-Adds a **Vision Pro** ribbon panel to Revit with two buttons:
+Adds a **Vision Pro** ribbon panel to Revit with three buttons:
 
 - **View in Apple Vision Pro** — exports the active 3D view (what is visible, at fine detail) to one
   `.usda` per level, uploads only the levels whose bytes changed to the local sync server, and the
   headset app swaps those levels in place within seconds.
+- **Toggle Void** — marks the selected elements as empty space. At real size the headset hides
+  whatever sits behind a real surface, so a pool or a car ramp dug below the real lawn would be
+  hidden by the ground; marked elements instead cut a hole in the headset's room scan, from the
+  element's top downward, so the pool shows through. Select the pool shell (floor and walls), a
+  ramp, or an in-place mass over the sunken area and press the button; it sets the Yes/No property
+  **Vision Pro Void** on each element (adding it to the project and the elements' categories the
+  first time), and a second press clears it. The property is also in the Properties palette, so it
+  can be ticked by hand. The hole is the convex outline of each marked element: for an L-shaped
+  pool mark its parts separately rather than one element spanning the L.
 - **Sync Settings** — server URL (default `http://127.0.0.1:8787`, i.e. the server runs on the same
   PC as Revit) and an optional project id / name (defaults derive from the document title).
 
@@ -48,6 +57,8 @@ Add-ins only load at Revit start, so after each rebuild restart Revit (or use th
   when geometry and scale are proven.
 - Within each element, faces sharing a material are merged into a single USD mesh, so a wall is one
   prim, not one prim per face.
+- Elements with *Vision Pro Void* = Yes are written as one invisible `void_e<id>_<n>` prim with no
+  material (see `PROTOCOL.md`); the headset reads them as holes in its scan and never draws them.
 
 ## Known limits
 

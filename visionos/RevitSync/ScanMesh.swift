@@ -7,6 +7,8 @@ import RealityKit
 /// project-wide scan frame and saved. The scan frame is pinned to the room by world anchors spaced
 /// through the property; each cell is placed by the pin that owns it, so the scan is back as soon
 /// as visionOS recognises any one pin, and a live chunk only hides the cells it has triangles in.
+/// The saved geometry is always complete; what is displayed is that geometry minus the triangles
+/// inside the model's voids (pools, ramps), recut whenever voids, placement or pins move.
 @MainActor
 @Observable
 final class ScanMesh {
@@ -27,6 +29,7 @@ final class ScanMesh {
     private struct Patch {
         let occluder: ModelEntity
         let wireframe: ModelEntity
+        var mesh: MeshResource
         var geometry = ScanGeometry()
         var originFromPatch = matrix_identity_float4x4
         var covering: Set<CellKey> = []
@@ -37,6 +40,7 @@ final class ScanMesh {
     private struct Cell {
         let occluder: ModelEntity
         let wireframe: ModelEntity
+        let mesh: MeshResource
         let record: ScanCellRecord
     }
 
@@ -54,6 +58,8 @@ final class ScanMesh {
     private var cells: [CellKey: Cell] = [:]
     private var anchors: [UUID: Anchor] = [:]
     private var coverCounts: [CellKey: Int] = [:]
+    private var voids: [Footprint.Void] = []
+    private var worldFromModel = matrix_identity_float4x4
 
     private let liveMaterial: UnlitMaterial = {
         var material = UnlitMaterial(color: .systemCyan)
@@ -87,12 +93,12 @@ final class ScanMesh {
         switch update.event {
         case .added, .updated:
             guard let mesh = try? await MeshResource(from: anchor) else { return }
-            var patch = live[anchor.id] ?? makePatch()
-            patch.occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
-            patch.wireframe.model = ModelComponent(mesh: mesh, materials: [liveMaterial])
+            var patch = live[anchor.id] ?? makePatch(mesh: mesh)
+            patch.mesh = mesh
             patch.originFromPatch = anchor.originFromAnchorTransform
             patch.occluder.transform = Transform(matrix: patch.originFromPatch)
             patch.geometry = ScanGeometry(vertices: Self.packed(anchor.geometry.vertices), indices: Self.packed(anchor.geometry.faces))
+            display(patch, material: liveMaterial)
             cover(&patch)
             live[anchor.id] = patch
         case .removed:
@@ -115,6 +121,16 @@ final class ScanMesh {
         guard isAligned else { return }
         for patch in live.values { writeCells(from: patch) }
         recount()
+    }
+
+    // MARK: Model voids
+
+    func setVoids(_ voids: [Footprint.Void], worldFromModel: simd_float4x4) {
+        self.voids = voids
+        self.worldFromModel = worldFromModel
+        for patch in live.values { display(patch, material: liveMaterial) }
+        for patch in pendingFreeze { display(patch, material: rememberedMaterial) }
+        for cell in cells.values { display(cell) }
     }
 
     // MARK: Pins
@@ -193,6 +209,8 @@ final class ScanMesh {
             let via = anchor.originFromAnchor != nil ? id : nearestTracked(toScan: Self.translation(anchor.scanFromAnchor))
             if let via { anchor.group.transform = Transform(matrix: originFromScan(via: via)) }
         }
+        // Moving a group moves its cells relative to the voids.
+        if !voids.isEmpty { cells.values.forEach(display) }
         rememberedRoot.isEnabled = aligned
         let wasAligned = isAligned
         isAligned = aligned
@@ -290,10 +308,65 @@ final class ScanMesh {
         cells[key] = nil
         guard let group = anchors[record.owner]?.group, let mesh = Self.mesh(record.geometry) else { return }
         let (occluder, wireframe) = makeEntities(parent: group)
-        occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
-        wireframe.model = ModelComponent(mesh: mesh, materials: [rememberedMaterial])
         occluder.isEnabled = coverCounts[key] == nil
-        cells[key] = Cell(occluder: occluder, wireframe: wireframe, record: record)
+        let cell = Cell(occluder: occluder, wireframe: wireframe, mesh: mesh, record: record)
+        display(cell)
+        cells[key] = cell
+    }
+
+    // MARK: Void cut
+
+    private func display(_ patch: Patch, material: UnlitMaterial) {
+        display(patch.mesh, patch.geometry, on: patch.occluder, patch.wireframe, material: material)
+    }
+
+    private func display(_ cell: Cell) {
+        display(cell.mesh, cell.record.geometry, on: cell.occluder, cell.wireframe, material: rememberedMaterial)
+    }
+
+    /// Shows `full` minus the triangles whose centre lies inside a void. Most meshes touch no void's
+    /// box and are shown whole, so the common case is one box test per mesh.
+    private func display(_ full: MeshResource, _ geometry: ScanGeometry, on occluder: ModelEntity, _ wireframe: ModelEntity, material: UnlitMaterial) {
+        let worldFromLocal = occluder.transformMatrix(relativeTo: nil)
+        let bounds = full.bounds.transformed(by: worldFromLocal)
+        let hits = voids.filter { worldBox(of: $0).intersects(bounds) }
+        var mesh: MeshResource? = full
+        if !hits.isEmpty {
+            let modelFromLocal = simd_inverse(worldFromModel) * worldFromLocal
+            let positions = ScanGrid.positions(geometry.vertices)
+            let indices = ScanGrid.indices(geometry.indices)
+            var kept: [UInt32] = []
+            kept.reserveCapacity(indices.count)
+            for t in stride(from: 0, to: indices.count - 2, by: 3) {
+                let centre = (positions[Int(indices[t])] + positions[Int(indices[t + 1])] + positions[Int(indices[t + 2])]) / 3
+                let m = modelFromLocal * SIMD4(centre, 1)
+                let p = SIMD3(m.x, m.y, m.z)
+                if !hits.contains(where: { $0.contains(p) }) { kept.append(contentsOf: indices[t..<t + 3]) }
+            }
+            mesh = Self.mesh(ScanGeometry(vertices: geometry.vertices, indices: ScanGrid.packed(kept)))
+        } else if occluder.model?.mesh === full {
+            return
+        }
+        guard let mesh else {
+            occluder.components.remove(ModelComponent.self)
+            wireframe.components.remove(ModelComponent.self)
+            return
+        }
+        occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
+        wireframe.model = ModelComponent(mesh: mesh, materials: [material])
+    }
+
+    /// World box of a void: its plan outline up to its ceiling, open downward. Placement is
+    /// yaw and uniform scale only, so world y depends on model y alone.
+    private func worldBox(of void: Footprint.Void) -> BoundingBox {
+        let corners = void.outline.map { p -> SIMD3<Float> in
+            let w = worldFromModel * SIMD4(p.x, void.ceiling, p.z, 1)
+            return SIMD3(w.x, w.y, w.z)
+        }
+        guard let first = corners.first else { return BoundingBox() }
+        let lo = corners.reduce(first, simd_min)
+        let hi = corners.reduce(first, simd_max)
+        return BoundingBox(min: SIMD3(lo.x, -.greatestFiniteMagnitude, lo.z), max: hi)
     }
 
     private func makeGroup() -> Entity {
@@ -303,9 +376,9 @@ final class ScanMesh {
         return group
     }
 
-    private func makePatch() -> Patch {
+    private func makePatch(mesh: MeshResource) -> Patch {
         let (occluder, wireframe) = makeEntities(parent: liveRoot)
-        return Patch(occluder: occluder, wireframe: wireframe)
+        return Patch(occluder: occluder, wireframe: wireframe, mesh: mesh)
     }
 
     private func makeEntities(parent: Entity) -> (occluder: ModelEntity, wireframe: ModelEntity) {

@@ -60,6 +60,8 @@ struct MeasurementLabel: View {
 
 struct PlacementControls: View {
     @Environment(AppModel.self) private var model
+    @State private var nudgeStart: SIMD3<Float>?
+    @State private var nudge = SIMD3<Float>.zero
 
     var body: some View {
         @Bindable var model = model
@@ -143,8 +145,8 @@ struct PlacementControls: View {
                 : "Pinch and drag the blue handle or the model to move it. Pinch with both hands to scale or rotate."
         case .precise:
             return scene.scaleLocked
-                ? "Drag the blue handle to move the base point. Use the slider to rotate around it." + sizeHint
-                : "Drag the blue handle to move the base point. Use the sliders to scale and rotate around it."
+                ? "Drag the blue handle to move the base point, or nudge it with the X/Y/Z sliders. Use the slider to rotate around it." + sizeHint
+                : "Drag the blue handle to move the base point, or nudge it with the X/Y/Z sliders. Use the sliders to scale and rotate around it."
         case .corners:
             return cornerCaption + (scene.lockedCorners.isEmpty ? sizeHint : "")
         }
@@ -202,6 +204,49 @@ struct PlacementControls: View {
                 stepButton("+1°") { rotate(by: 1) }
             }
         }
+        ForEach(0..<3, id: \.self) { axis in
+            translationControl(axis: axis)
+        }
+    }
+
+    /// The slider moves up to ±3 m from where the drag began and recentres on release,
+    /// so it stays fine-grained wherever the model sits.
+    private func translationControl(axis: Int) -> some View {
+        let scene = model.scene
+        return VStack(alignment: .leading) {
+            Text("\(["X", "Y", "Z"][axis]) \(String(format: "%.2f", scene.placement.position[axis] / 0.3048)) ft")
+            Slider(
+                value: Binding(
+                    get: { Double(nudge[axis]) },
+                    set: { value in
+                        let start = nudgeStart ?? scene.placement.position
+                        nudgeStart = start
+                        nudge[axis] = Float(value)
+                        var position = start
+                        position[axis] += Float(value)
+                        scene.setPosition(position)
+                    }),
+                in: -3...3,
+                onEditingChanged: { editing in
+                    if !editing {
+                        nudgeStart = nil
+                        nudge = .zero
+                    }
+                    sliderEditing(editing)
+                })
+            HStack {
+                stepButton("−1 ft") { translate(axis: axis, by: -0.3048) }
+                stepButton("−1 in") { translate(axis: axis, by: -0.0254) }
+                stepButton("+1 in") { translate(axis: axis, by: 0.0254) }
+                stepButton("+1 ft") { translate(axis: axis, by: 0.3048) }
+            }
+        }
+    }
+
+    private func translate(axis: Int, by meters: Float) {
+        var position = model.scene.placement.position
+        position[axis] += meters
+        model.scene.setPosition(position)
     }
 
     private func rotate(by degrees: Float) {

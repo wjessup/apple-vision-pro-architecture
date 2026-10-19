@@ -9,6 +9,7 @@ struct ImmersiveView: View {
 
     @State private var dragStart: SIMD3<Float>?
     @State private var draggedCorner: Int?
+    @State private var draggingPanel = false
     @State private var scaleStart: Float?
     @State private var yawStart: Float?
     @State private var panelUpdates: EventSubscription?
@@ -21,12 +22,15 @@ struct ImmersiveView: View {
             content.add(scene.scanMesh.root)
             scene.startTracking()
             scene.resetPanel()
+            content.add(scene.panelRoot)
             if let panel = attachments.entity(for: "tools") {
-                content.add(panel)
-                panelUpdates = content.subscribe(to: SceneEvents.Update.self) { event in
-                    scene.updatePanel(panel, deltaTime: Float(event.deltaTime), follow: model.followMe)
-                    scene.updateCornerBallSize()
-                }
+                scene.panelRoot.children.filter { $0 !== scene.panelGrip }.forEach { $0.removeFromParent() }
+                scene.panelRoot.addChild(panel)
+            }
+            panelUpdates = content.subscribe(to: SceneEvents.Update.self) { event in
+                scene.updatePanel(deltaTime: Float(event.deltaTime), follow: model.followMe)
+                scene.updateCornerBallSize()
+                scene.updateMarkSizes()
             }
         } update: { _, attachments in
             for measurement in scene.measurements {
@@ -56,7 +60,7 @@ struct ImmersiveView: View {
         .gesture(drag)
         .simultaneousGesture(magnify)
         .simultaneousGesture(rotate)
-        .simultaneousGesture(measureTap)
+        .simultaneousGesture(toolTap)
         .simultaneousGesture(tap)
         .onAppear { model.immersiveOpen = true }
         // The main window may be closed while the space stays open, so the space saves too.
@@ -66,18 +70,23 @@ struct ImmersiveView: View {
         .onDisappear {
             model.immersiveOpen = false
             scene.scanMesh.flushLive()
-            scene.setMeasuring(false)
+            scene.setTool(.none)
             panelUpdates?.cancel()
         }
     }
 
-    private var measureTap: some Gesture {
+    private var toolTap: some Gesture {
         SpatialTapGesture()
             .targetedToEntity(scene.root)
             .onEnded { value in
-                guard scene.measuring, isDescendant(value.entity, of: scene.model) else { return }
-                let point = value.convert(value.location3D, from: .local, to: .scene)
-                scene.addMeasurePoint(scene.root.convert(position: point, from: nil))
+                guard scene.toolActive, isDescendant(value.entity, of: scene.model) else { return }
+                let point = scene.root.convert(position: value.convert(value.location3D, from: .local, to: .scene), from: nil)
+                switch scene.tool {
+                case .measure: scene.addMeasurePoint(point)
+                case .voidSurface: scene.addVoid(fromElement: value.entity)
+                case .voidPolygon: scene.addPolygonPoint(point)
+                case .none: break
+                }
             }
     }
 
@@ -85,13 +94,21 @@ struct ImmersiveView: View {
         DragGesture(minimumDistance: 0.0, coordinateSpace: .global)
             .targetedToAnyEntity()
             .onChanged { value in
-                guard !model.locked, !scene.measuring else { return }
+                if dragStart == nil, value.entity === scene.panelGrip {
+                    draggingPanel = true
+                    dragStart = scene.panelRoot.position
+                }
+                if draggingPanel {
+                    scene.dragPanel(to: dragStart! + value.convert(value.translation3D, from: .local, to: .scene))
+                    return
+                }
+                guard !model.locked, !scene.toolActive else { return }
                 if dragStart == nil {
                     if let corner = scene.cornerIndex(of: value.entity), let start = scene.cornerWorld(corner) {
                         guard scene.cornerState(corner) == .free else { return scene.warnCornerLocked() }
                         draggedCorner = corner
                         dragStart = start
-                    } else if isDescendant(value.entity, of: scene.root), !isDescendant(value.entity, of: scene.measureRoot) {
+                    } else if isDescendant(value.entity, of: scene.root), !isDescendant(value.entity, of: scene.marksRoot) {
                         guard !scene.cornerLocked else { return scene.warnCornerLocked() }
                         dragStart = scene.root.position(relativeTo: nil)
                     } else {
@@ -110,6 +127,10 @@ struct ImmersiveView: View {
                 guard dragStart != nil else { return }
                 dragStart = nil
                 draggedCorner = nil
+                if draggingPanel {
+                    draggingPanel = false
+                    return
+                }
                 finishGesture()
             }
     }
@@ -118,7 +139,11 @@ struct ImmersiveView: View {
         SpatialTapGesture()
             .targetedToAnyEntity()
             .onEnded { value in
-                guard !model.locked, !scene.measuring, let corner = scene.cornerIndex(of: value.entity) else { return }
+                if let hit = scene.selection(of: value.entity) {
+                    scene.selection = scene.selection == hit ? nil : hit
+                    return
+                }
+                guard !model.locked, !scene.toolActive, let corner = scene.cornerIndex(of: value.entity) else { return }
                 scene.toggleCornerLock(corner)
             }
     }
@@ -127,7 +152,7 @@ struct ImmersiveView: View {
         MagnifyGesture()
             .targetedToEntity(scene.root)
             .onChanged { value in
-                guard !model.locked, !scene.measuring, model.placementMode == .basic, !scene.scaleLocked else { return }
+                guard !model.locked, !scene.toolActive, model.placementMode == .basic, !scene.scaleLocked else { return }
                 guard !scene.cornerLocked else { return scene.warnCornerLocked() }
                 if scaleStart == nil {
                     scaleStart = scene.placement.scale
@@ -146,7 +171,7 @@ struct ImmersiveView: View {
         RotateGesture3D(constrainedToAxis: .y)
             .targetedToEntity(scene.root)
             .onChanged { value in
-                guard !model.locked, !scene.measuring, model.placementMode == .basic else { return }
+                guard !model.locked, !scene.toolActive, model.placementMode == .basic else { return }
                 guard !scene.cornerLocked else { return scene.warnCornerLocked() }
                 if yawStart == nil {
                     yawStart = scene.placement.yaw

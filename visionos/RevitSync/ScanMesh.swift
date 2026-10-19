@@ -4,7 +4,7 @@ import RealityKit
 
 /// Scene-reconstruction geometry, kept for the whole property. ARKit only maintains mesh anchors
 /// near the wearer and reports the rest as removed; a removed chunk is binned into 1 m cells of a
-/// project-wide scan frame and saved. The scan frame is pinned to the room by world anchors spaced
+/// property-wide scan frame and saved. The scan frame is pinned to the room by world anchors spaced
 /// through the property; each cell is placed by the pin that owns it, so the scan is back as soon
 /// as visionOS recognises any one pin, and a live chunk only hides the cells it has triangles in.
 /// The saved geometry is always complete; what is displayed is that geometry minus the triangles
@@ -50,7 +50,6 @@ final class ScanMesh {
         let group: Entity
     }
 
-    private var project: String?
     private let liveRoot = Entity()
     private let rememberedRoot = Entity()
     private var live: [UUID: Patch] = [:]
@@ -108,7 +107,7 @@ final class ScanMesh {
         recount()
     }
 
-    /// Freezes every live patch; called when the immersive space closes or the project changes.
+    /// Freezes every live patch; called when the immersive space closes.
     func flushLive() {
         for patch in live.values { freeze(patch) }
         live.removeAll()
@@ -155,11 +154,7 @@ final class ScanMesh {
 
     func addAnchor(id: UUID, scanFromAnchor: simd_float4x4, originFromAnchor: simd_float4x4) {
         anchors[id] = Anchor(scanFromAnchor: scanFromAnchor, originFromAnchor: originFromAnchor, group: makeGroup())
-        if let project {
-            ScanStore.saveAnchors(
-                anchors.map { ScanAnchorRecord(id: $0.key, scanFromAnchor: Self.columns($0.value.scanFromAnchor)) },
-                project: project)
-        }
+        ScanStore.saveAnchors(anchors.map { ScanAnchorRecord(id: $0.key, scanFromAnchor: Self.columns($0.value.scanFromAnchor)) })
         refreshAlignment()
     }
 
@@ -169,10 +164,9 @@ final class ScanMesh {
         refreshAlignment()
     }
 
-    // MARK: Project
+    // MARK: Saved scan
 
-    func load(project: String, anchors: [ScanAnchorRecord], cells: [CellKey: ScanCellRecord]) {
-        self.project = project
+    func load(anchors: [ScanAnchorRecord], cells: [CellKey: ScanCellRecord]) {
         removeAll()
         for record in anchors {
             self.anchors[record.id] = Anchor(scanFromAnchor: Self.matrix(record.scanFromAnchor), originFromAnchor: nil, group: makeGroup())
@@ -299,7 +293,7 @@ final class ScanMesh {
             } ?? fresh
             let record = ScanCellRecord(owner: owner, geometry: geometry)
             setCell(key, record)
-            if let project { ScanStore.save(record, key: key, project: project) }
+            ScanStore.save(record, key: key)
         }
     }
 

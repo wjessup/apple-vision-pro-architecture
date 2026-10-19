@@ -89,7 +89,7 @@ namespace RevitSync
             {
                 if (pair.Value.FaceCount == 0) continue;
                 if (_currentIsVoid)
-                    _current.WriteVoidMesh($"void_e{elementId.Value()}", pair.Value);
+                    _current.WriteVoidMesh($"void_e{elementId.Value()}_{_current.MeshCount}", pair.Value);
                 else
                     _current.WriteMesh($"e{elementId.Value()}_{_current.MeshCount}", pair.Value, pair.Key);
             }
@@ -324,7 +324,7 @@ namespace RevitSync
             var w = _writer;
             w.WriteLine($"    def Mesh \"{name}\"");
             w.WriteLine("    {");
-            w.WriteLine("        uniform token visibility = \"invisible\"");
+            w.WriteLine("        token visibility = \"invisible\"");
             WriteGeometry(mesh);
         }
 

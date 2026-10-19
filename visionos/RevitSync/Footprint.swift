@@ -129,8 +129,10 @@ enum Footprint {
         /// The 0.1 m above `top` is ARKit's vertical placement error for a flat scanned surface: a pool whose
         /// coping sits exactly at grade would otherwise keep about half of the lawn triangles over it. There is
         /// no lower bound because nothing real is scanned beneath a pool floor or a ramp surface.
+        var ceiling: Float { top + 0.1 }
+
         func contains(_ p: SIMD3<Float>) -> Bool {
-            guard p.y <= top + 0.1 else { return false }
+            guard p.y <= ceiling else { return false }
             var inside = false
             var j = outline.count - 1
             for i in outline.indices {

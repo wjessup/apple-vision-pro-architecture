@@ -39,11 +39,11 @@ namespace RevitSync
                     EnsureBinding(doc, app, selected);
                     doc.Regenerate();
 
-                    var parameters = selected.Select(e => e.LookupParameter(ParameterName)).ToList();
-                    value = parameters.Any(p => p == null || p.AsInteger() == 0) ? 1 : 0;
+                    var parameters = selected.Select(e => e.LookupParameter(ParameterName))
+                        .Where(p => p != null && !p.IsReadOnly).ToList();
+                    value = parameters.Any(p => p.AsInteger() == 0) ? 1 : 0;
                     foreach (var parameter in parameters)
                     {
-                        if (parameter == null || parameter.IsReadOnly) continue;
                         parameter.Set(value);
                         changed++;
                     }

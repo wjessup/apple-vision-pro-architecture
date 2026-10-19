@@ -57,7 +57,7 @@ Add-ins only load at Revit start, so after each rebuild restart Revit (or use th
   when geometry and scale are proven.
 - Within each element, faces sharing a material are merged into a single USD mesh, so a wall is one
   prim, not one prim per face.
-- Elements with *Vision Pro Void* = Yes are written as one invisible `void_e<id>` prim with no
+- Elements with *Vision Pro Void* = Yes are written as one invisible `void_e<id>_<n>` prim with no
   material (see `PROTOCOL.md`); the headset reads them as holes in its scan and never draws them.
 
 ## Known limits

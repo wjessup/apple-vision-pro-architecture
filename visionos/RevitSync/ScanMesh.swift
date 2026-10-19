@@ -229,7 +229,7 @@ final class ScanMesh {
             let world = void.outline.map { worldFromModel * SIMD4($0, 1) }
             let xs = world.map(\.x), zs = world.map(\.z)
             // Placement is yaw-only, so world y depends on model y alone.
-            let top = (worldFromModel * SIMD4(first.x, void.top + 0.1, first.z, 1)).y
+            let top = (worldFromModel * SIMD4(first.x, void.ceiling, first.z, 1)).y
             let box = BoundingBox(
                 min: SIMD3<Float>(xs.min()!, -.greatestFiniteMagnitude, zs.min()!),
                 max: SIMD3<Float>(xs.max()!, top, zs.max()!))

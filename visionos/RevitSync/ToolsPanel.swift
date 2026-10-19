@@ -3,35 +3,63 @@ import SwiftUI
 struct ToolsPanel: View {
     @Environment(AppModel.self) private var model
     let bringWindow: () -> Void
+    @State private var voidMode: Tool = .voidSurface
 
     var body: some View {
         let scene = model.scene
-        VStack(alignment: .leading, spacing: 8) {
-            Button("Bring window here", systemImage: "macwindow", action: bringWindow)
-            Toggle("Measure", isOn: Binding(get: { scene.measuring }, set: { scene.setMeasuring($0) }))
-                .disabled(!scene.atRealSize)
-            if let measureCaption {
-                Text(measureCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        let voidActive = scene.tool == .voidSurface || scene.tool == .voidPolygon
+        HStack(spacing: 4) {
+            iconButton("Bring window here", systemImage: "macwindow", action: bringWindow)
+            iconButton("Measure", systemImage: "ruler", active: scene.tool == .measure, color: .yellow) {
+                scene.setTool(scene.tool == .measure ? .none : .measure)
             }
-            if let warning = scene.lockWarning {
-                Label(warning, systemImage: "lock.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+            .disabled(!scene.atRealSize)
+            iconButton("Void", systemImage: "square.dashed", active: voidActive) {
+                scene.setTool(voidActive ? .none : voidMode)
             }
+            .disabled(!scene.atRealSize)
+            if voidActive {
+                iconButton("Surface void", systemImage: "square.fill", active: scene.tool == .voidSurface) {
+                    voidMode = .voidSurface
+                    scene.setTool(.voidSurface)
+                }
+                iconButton("Polygon void", systemImage: "pentagon", active: scene.tool == .voidPolygon) {
+                    voidMode = .voidPolygon
+                    scene.setTool(.voidPolygon)
+                }
+            }
+            if scene.tool == .voidPolygon {
+                iconButton("Finish polygon", systemImage: "checkmark.circle") { scene.finishPolygon() }
+                    .disabled(scene.pendingPolygon.count < 3)
+            }
+            Button(role: .destructive) {
+                scene.deleteSelected()
+            } label: {
+                Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help("Delete")
+            .disabled(scene.selection == nil)
         }
-        .padding(16)
-        .frame(width: 260)
+        .font(.title2)
+        .padding(10)
         .glassBackgroundEffect()
     }
 
-    private var measureCaption: String? {
-        let scene = model.scene
-        if !scene.atRealSize { return "Switch to 1:1 Real size to measure" }
-        guard scene.measuring else { return nil }
-        if scene.preparingMeasure { return "Preparing…" }
-        return scene.pendingPoint == nil ? "Pinch a spot on the model…" : "Pinch a second spot…"
+    private func iconButton(
+        _ title: String,
+        systemImage: String,
+        active: Bool = false,
+        color: Color = .blue,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+                .foregroundStyle(active ? AnyShapeStyle(color) : AnyShapeStyle(.primary))
+        }
+        .buttonStyle(.borderless)
+        .help(title)
     }
 }
 
@@ -41,10 +69,10 @@ struct MeasurementLabel: View {
 
     var body: some View {
         let scene = model.scene
-        let selected = scene.selectedMeasurement == measurement.id
+        let selected = scene.selection == .measurement(measurement.id)
         HStack(spacing: 8) {
             Button(feetAndInches(meters: measurement.meters)) {
-                scene.selectedMeasurement = selected ? nil : measurement.id
+                scene.selection = selected ? nil : .measurement(measurement.id)
             }
             .buttonStyle(.borderless)
             if selected {

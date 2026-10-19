@@ -53,6 +53,18 @@ enum CornerState {
     case unavailable
 }
 
+enum Tool {
+    case none
+    case measure
+    case voidSurface
+    case voidPolygon
+}
+
+enum Selection: Equatable {
+    case measurement(UUID)
+    case void(UUID)
+}
+
 @MainActor
 @Observable
 final class SceneController {
@@ -62,7 +74,9 @@ final class SceneController {
     let pivotMarker: ModelEntity
     let cornerBalls: [ModelEntity]
     let scanMesh = ScanMesh()
-    let measureRoot = Entity()
+    let marksRoot = Entity()
+    let panelRoot = Entity()
+    let panelGrip: ModelEntity
 
     private(set) var placement = Placement.tabletop
     private(set) var mode = PlacementMode.basic
@@ -114,17 +128,27 @@ final class SceneController {
         return icon
     }
 
-    private(set) var measuring = false
-    private(set) var preparingMeasure = false
+    private(set) var tool = Tool.none
+    var toolActive: Bool { tool != .none }
     private(set) var measurements: [Measurement] = []
     private(set) var pendingPoint: SIMD3<Float>?
-    var selectedMeasurement: UUID?
+    private(set) var voidMarks: [VoidMark] = []
+    private(set) var pendingPolygon: [SIMD3<Float>] = []
+    var selection: Selection? {
+        didSet { applyHighlight() }
+    }
     private var meshShapes: [String: Task<[(entity: Entity, shape: ShapeResource)], Never>] = [:]
     private var measureEntities: [UUID: Entity] = [:]
+    private var voidEntities: [UUID: Entity] = [:]
     private let pendingDot: ModelEntity
+    private let pendingLayer = Entity()
     private static let measureMaterial = UnlitMaterial(color: .systemYellow)
+    private static let voidMaterial = UnlitMaterial(color: .systemBlue)
+    private static let selectedMaterial = UnlitMaterial(color: .white)
     private var panelPlaced = false
     private var panelMoving = false
+    private static let defaultPanelOffset: SIMD3<Float> = [0, -0.3, -0.6]
+    private var panelOffset = SceneController.defaultPanelOffset
 
     var loadedPartitions: [String: String] { partitions.mapValues(\.sha256) }
 
@@ -148,6 +172,17 @@ final class SceneController {
         pivotMarker.isEnabled = false
 
         pendingDot = ModelEntity(mesh: .generateSphere(radius: 0.01), materials: [Self.measureMaterial])
+
+        var gripMaterial = UnlitMaterial(color: .white)
+        gripMaterial.blending = .transparent(opacity: 0.8)
+        panelGrip = ModelEntity(mesh: .generateBox(size: [0.12, 0.012, 0.012], cornerRadius: 0.006), materials: [gripMaterial])
+        panelGrip.name = "panelGrip"
+        panelGrip.position = [0, -0.045, 0]
+        panelGrip.components.set(CollisionComponent(shapes: [.generateBox(size: [0.14, 0.03, 0.03])]))
+        panelGrip.components.set(InputTargetComponent())
+        panelGrip.components.set(HoverEffectComponent())
+        panelRoot.name = "toolsPanel"
+        panelRoot.addChild(panelGrip)
 
         cornerBalls = Footprint.cornerNames.map { name in
             let ball = ModelEntity(mesh: .generateSphere(radius: 0.04), materials: [SceneController.freeCornerMaterial])
@@ -176,9 +211,10 @@ final class SceneController {
         cornerBalls.forEach { root.addChild($0) }
 
         pendingDot.isEnabled = false
-        measureRoot.name = "measurements"
-        measureRoot.addChild(pendingDot)
-        root.addChild(measureRoot)
+        marksRoot.name = "marks"
+        marksRoot.addChild(pendingDot)
+        marksRoot.addChild(pendingLayer)
+        root.addChild(marksRoot)
         refreshCollision()
         applyPlacement()
     }
@@ -192,9 +228,13 @@ final class SceneController {
         clear()
         placement = Placement.load(project: project) ?? .tabletop
         measurements = .load(project: project)
+        voidMarks = .load(project: project)
         setPending(nil)
-        selectedMeasurement = nil
+        pendingPolygon = []
+        redrawPendingPolygon()
+        selection = nil
         redrawMeasurements()
+        redrawVoids()
         applyPlacement()
         refreshCornerBalls()
         let scan = ScanStore.load(project: project)
@@ -263,7 +303,7 @@ final class SceneController {
     }
 
     private func pushVoids() {
-        scanMesh.setVoids(partitions.values.flatMap(\.voids), worldFromModel: model.transformMatrix(relativeTo: nil))
+        scanMesh.setVoids(partitions.values.flatMap(\.voids) + voidMarks.map(\.void), worldFromModel: model.transformMatrix(relativeTo: nil))
     }
 
     private func outline(of entity: Entity) -> [SIMD3<Float>] {
@@ -311,20 +351,18 @@ final class SceneController {
     // whole-model box: a real-size model's box encloses the user, and a gaze ray starting inside a
     // collider hits it at distance zero, stealing input from the tools panel and windows in front.
     // Each mesh also gets its own input target so a tap reports that mesh, not `root`.
-    private var meshCollidersWanted: Bool { measuring || (mode == .basic && !inputLocked) }
+    private var meshCollidersWanted: Bool { toolActive || (mode == .basic && !inputLocked) }
 
     private func refreshCollisionAsync() async {
-        handle.isEnabled = !inputLocked && !measuring && mode != .corners
+        handle.isEnabled = !inputLocked && !toolActive && mode != .corners
         if meshCollidersWanted {
             for (id, partition) in partitions where meshShapes[id] == nil {
                 meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
             }
         }
         let tasks = meshShapes
-        preparingMeasure = measuring
         var ready: [[(entity: Entity, shape: ShapeResource)]] = []
         for task in tasks.values { ready.append(await task.value) }
-        preparingMeasure = false
         for shapes in ready {
             for (entity, shape) in shapes {
                 if meshCollidersWanted, entity.parent != nil {

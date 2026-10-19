@@ -23,10 +23,13 @@ final class ScanMesh {
     private(set) var rememberedCount = 0
     private(set) var isAligned = false
 
+    /// `vertices`/`indices`/`mesh` are the full patch, which is what `ScanStore` saves; the occluder
+    /// and wireframe display it minus the triangles inside model voids.
     private struct Patch {
         let id: UUID
         let occluder: ModelEntity
         let wireframe: ModelEntity
+        var mesh: MeshResource
         var vertices = Data()
         var indices = Data()
     }
@@ -37,6 +40,9 @@ final class ScanMesh {
     private var live: [UUID: Patch] = [:]
     private var remembered: [Patch] = []
     private var pendingFreeze: [Patch] = []
+    private var voids: [Footprint.Void] = []
+    private var worldFromModel = matrix_identity_float4x4
+    private var recutTask: Task<Void, Never>?
 
     private let liveMaterial: UnlitMaterial = {
         var material = UnlitMaterial(color: .systemCyan)
@@ -71,13 +77,13 @@ final class ScanMesh {
         case .added, .updated:
             guard let mesh = try? await MeshResource(from: anchor) else { return }
             let isNew = live[anchor.id] == nil
-            var patch = live[anchor.id] ?? makePatch(parent: liveRoot)
-            patch.occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
-            patch.wireframe.model = ModelComponent(mesh: mesh, materials: [liveMaterial])
+            var patch = live[anchor.id] ?? makePatch(parent: liveRoot, mesh: mesh)
+            patch.mesh = mesh
             patch.occluder.transform = Transform(matrix: anchor.originFromAnchorTransform)
             patch.vertices = Self.packed(anchor.geometry.vertices)
             patch.indices = Self.packed(anchor.geometry.faces)
             live[anchor.id] = patch
+            recut([patch])
             if isNew { replaceRemembered(coveredBy: patch) }
         case .removed:
             guard let patch = live.removeValue(forKey: anchor.id) else { return }
@@ -108,7 +114,16 @@ final class ScanMesh {
         }
         for patch in pendingFreeze { attachRemembered(patch) }
         pendingFreeze.removeAll()
+        if !wasAligned { recut(remembered) }
         recount()
+    }
+
+    // MARK: Model voids
+
+    func setVoids(_ voids: [Footprint.Void], worldFromModel: simd_float4x4) {
+        self.voids = voids
+        self.worldFromModel = worldFromModel
+        recut(Array(live.values) + remembered + pendingFreeze)
     }
 
     // MARK: Project
@@ -121,14 +136,13 @@ final class ScanMesh {
             descriptor.positions = MeshBuffer(Self.positions(stored.vertices))
             descriptor.primitives = .triangles(Self.unpacked(stored.indices, as: UInt32.self))
             guard let mesh = try? MeshResource.generate(from: [descriptor]) else { continue }
-            var patch = makePatch(parent: anchored, id: stored.id)
-            patch.occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
-            patch.wireframe.model = ModelComponent(mesh: mesh, materials: [rememberedMaterial])
+            var patch = makePatch(parent: anchored, id: stored.id, mesh: mesh)
             patch.occluder.transform = Transform(matrix: Self.matrix(stored.transform))
             patch.vertices = stored.vertices
             patch.indices = stored.indices
             remembered.append(patch)
         }
+        recut(remembered)
         recount()
     }
 
@@ -174,9 +188,9 @@ final class ScanMesh {
     /// and the live patch is saved in its place when it is frozen.
     private func replaceRemembered(coveredBy patch: Patch) {
         guard isAligned else { return }
-        let bounds = patch.occluder.visualBounds(relativeTo: nil)
+        let bounds = worldBounds(patch)
         remembered.removeAll { candidate in
-            let center = candidate.occluder.visualBounds(relativeTo: nil).center
+            let center = worldBounds(candidate).center
             guard bounds.contains(center) else { return false }
             candidate.occluder.removeFromParent()
             if let project { ScanStore.remove(id: candidate.id, project: project) }
@@ -184,13 +198,71 @@ final class ScanMesh {
         }
     }
 
-    private func makePatch(parent: Entity, id: UUID = UUID()) -> Patch {
+    private func makePatch(parent: Entity, id: UUID = UUID(), mesh: MeshResource) -> Patch {
         let occluder = ModelEntity()
         let wireframe = ModelEntity()
         wireframe.isEnabled = isVisible
         occluder.addChild(wireframe)
         parent.addChild(occluder)
-        return Patch(id: id, occluder: occluder, wireframe: wireframe)
+        return Patch(id: id, occluder: occluder, wireframe: wireframe, mesh: mesh)
+    }
+
+    /// Full-geometry bounds, so a patch cut down to nothing still has a place in the world.
+    private func worldBounds(_ patch: Patch) -> BoundingBox {
+        patch.mesh.bounds.transformed(by: patch.occluder.transformMatrix(relativeTo: nil))
+    }
+
+    private func recut(_ patches: [Patch]) {
+        recutTask = Task { [previous = recutTask] in
+            await previous?.value
+            for patch in patches { cut(patch) }
+        }
+    }
+
+    private func cut(_ patch: Patch) {
+        let isLive = live.values.contains { $0.occluder === patch.occluder }
+        let wireframeMaterial = isLive ? liveMaterial : rememberedMaterial
+        let patchBounds = worldBounds(patch)
+        let modelFromWorld = simd_inverse(worldFromModel)
+        let hits = voids.filter { void in
+            guard let first = void.outline.first else { return false }
+            let world = void.outline.map { worldFromModel * SIMD4($0, 1) }
+            let xs = world.map(\.x), zs = world.map(\.z)
+            // Placement is yaw-only, so world y depends on model y alone.
+            let top = (worldFromModel * SIMD4(first.x, void.top + 0.1, first.z, 1)).y
+            let box = BoundingBox(
+                min: SIMD3<Float>(xs.min()!, -.greatestFiniteMagnitude, zs.min()!),
+                max: SIMD3<Float>(xs.max()!, top, zs.max()!))
+            return box.intersects(patchBounds)
+        }
+
+        var mesh = patch.mesh
+        if !hits.isEmpty {
+            let positions = Self.positions(patch.vertices)
+            let indices = Self.unpacked(patch.indices, as: UInt32.self)
+            let modelFromLocal = modelFromWorld * patch.occluder.transformMatrix(relativeTo: nil)
+            var kept: [UInt32] = []
+            kept.reserveCapacity(indices.count)
+            for t in stride(from: 0, to: indices.count - 2, by: 3) {
+                let tri = indices[t..<t + 3]
+                let centre = tri.reduce(SIMD3<Float>.zero) { $0 + positions[Int($1)] } / 3
+                let m = modelFromLocal * SIMD4(centre, 1)
+                let p = SIMD3(m.x, m.y, m.z)
+                if !hits.contains(where: { $0.contains(p) }) { kept.append(contentsOf: tri) }
+            }
+            guard !kept.isEmpty else {
+                patch.occluder.components.remove(ModelComponent.self)
+                patch.wireframe.components.remove(ModelComponent.self)
+                return
+            }
+            var descriptor = MeshDescriptor()
+            descriptor.positions = MeshBuffer(positions)
+            descriptor.primitives = .triangles(kept)
+            guard let generated = try? MeshResource.generate(from: [descriptor]) else { return }
+            mesh = generated
+        }
+        patch.occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
+        patch.wireframe.model = ModelComponent(mesh: mesh, materials: [wireframeMaterial])
     }
 
     private func recount() {

@@ -223,9 +223,9 @@ final class SceneController {
                 stack.append(contentsOf: current.children)
             }
         }
-        let voids = found.compactMap { root -> Footprint.Void? in
+        let voids = found.compactMap { void -> Footprint.Void? in
             var points: [SIMD3<Float>] = []
-            var stack = [root]
+            var stack = [void]
             while let current = stack.popLast() {
                 stack.append(contentsOf: current.children)
                 points.append(contentsOf: modelPoints(of: current))

@@ -26,6 +26,13 @@ namespace RevitSync
                 ToolTip = "Server address and project name used by View in Apple Vision Pro.",
             };
 
+            view.LargeImage = Icons.Render(Icons.Headset, 32);
+            view.Image = Icons.Render(Icons.Headset, 16);
+            voids.LargeImage = Icons.Render(Icons.Void, 32);
+            voids.Image = Icons.Render(Icons.Void, 16);
+            settings.LargeImage = Icons.Render(Icons.Gear, 32);
+            settings.Image = Icons.Render(Icons.Gear, 16);
+
             panel.AddItem(view);
             panel.AddItem(voids);
             panel.AddItem(settings);

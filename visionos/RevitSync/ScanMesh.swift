@@ -2,10 +2,11 @@ import ARKit
 import Metal
 import RealityKit
 
-/// Scene-reconstruction patches, kept for the whole property. ARKit only maintains mesh anchors
-/// near the wearer and reports the rest as removed; removed patches are frozen under `anchored`
-/// (which follows the project's scan world anchor) and saved, so they survive walking away and
-/// relaunching. A new live patch covering a frozen one replaces it.
+/// Scene-reconstruction geometry, kept for the whole property. ARKit only maintains mesh anchors
+/// near the wearer and reports the rest as removed; a removed chunk is binned into 1 m cells of a
+/// project-wide scan frame and saved. The scan frame is pinned to the room by world anchors spaced
+/// through the property; each cell is placed by the pin that owns it, so the scan is back as soon
+/// as visionOS recognises any one pin, and a live chunk only hides the cells it has triangles in.
 @MainActor
 @Observable
 final class ScanMesh {
@@ -14,8 +15,8 @@ final class ScanMesh {
     var isVisible = false {
         didSet {
             live.values.forEach { $0.wireframe.isEnabled = isVisible }
-            remembered.forEach { $0.wireframe.isEnabled = isVisible }
             pendingFreeze.forEach { $0.wireframe.isEnabled = isVisible }
+            cells.values.forEach { $0.wireframe.isEnabled = isVisible }
         }
     }
 
@@ -24,19 +25,35 @@ final class ScanMesh {
     private(set) var isAligned = false
 
     private struct Patch {
-        let id: UUID
         let occluder: ModelEntity
         let wireframe: ModelEntity
-        var vertices = Data()
-        var indices = Data()
+        var geometry = ScanGeometry()
+        var originFromPatch = matrix_identity_float4x4
+        var covering: Set<CellKey> = []
+
+        var position: SIMD3<Float> { ScanMesh.translation(originFromPatch) }
+    }
+
+    private struct Cell {
+        let occluder: ModelEntity
+        let wireframe: ModelEntity
+        let record: ScanCellRecord
+    }
+
+    private struct Anchor {
+        let scanFromAnchor: simd_float4x4
+        var originFromAnchor: simd_float4x4?
+        let group: Entity
     }
 
     private var project: String?
     private let liveRoot = Entity()
-    private let anchored = Entity()
+    private let rememberedRoot = Entity()
     private var live: [UUID: Patch] = [:]
-    private var remembered: [Patch] = []
     private var pendingFreeze: [Patch] = []
+    private var cells: [CellKey: Cell] = [:]
+    private var anchors: [UUID: Anchor] = [:]
+    private var coverCounts: [CellKey: Int] = [:]
 
     private let liveMaterial: UnlitMaterial = {
         var material = UnlitMaterial(color: .systemCyan)
@@ -57,10 +74,10 @@ final class ScanMesh {
     init() {
         root.name = "scanMesh"
         liveRoot.name = "scanLive"
-        anchored.name = "scanAnchored"
-        anchored.isEnabled = false
+        rememberedRoot.name = "scanRemembered"
+        rememberedRoot.isEnabled = false
         root.addChild(liveRoot)
-        root.addChild(anchored)
+        root.addChild(rememberedRoot)
     }
 
     // MARK: Live updates
@@ -70,15 +87,14 @@ final class ScanMesh {
         switch update.event {
         case .added, .updated:
             guard let mesh = try? await MeshResource(from: anchor) else { return }
-            let isNew = live[anchor.id] == nil
-            var patch = live[anchor.id] ?? makePatch(parent: liveRoot)
+            var patch = live[anchor.id] ?? makePatch()
             patch.occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
             patch.wireframe.model = ModelComponent(mesh: mesh, materials: [liveMaterial])
-            patch.occluder.transform = Transform(matrix: anchor.originFromAnchorTransform)
-            patch.vertices = Self.packed(anchor.geometry.vertices)
-            patch.indices = Self.packed(anchor.geometry.faces)
+            patch.originFromPatch = anchor.originFromAnchorTransform
+            patch.occluder.transform = Transform(matrix: patch.originFromPatch)
+            patch.geometry = ScanGeometry(vertices: Self.packed(anchor.geometry.vertices), indices: Self.packed(anchor.geometry.faces))
+            cover(&patch)
             live[anchor.id] = patch
-            if isNew { replaceRemembered(coveredBy: patch) }
         case .removed:
             guard let patch = live.removeValue(forKey: anchor.id) else { return }
             freeze(patch)
@@ -86,49 +102,66 @@ final class ScanMesh {
         recount()
     }
 
-    /// Freezes every live patch; called when the immersive space closes so nothing is lost.
+    /// Freezes every live patch; called when the immersive space closes or the project changes.
     func flushLive() {
         for patch in live.values { freeze(patch) }
         live.removeAll()
         recount()
     }
 
-    // MARK: Anchor
-
-    func setAnchorTransform(_ transform: simd_float4x4) {
-        anchored.transform = Transform(matrix: transform)
-        anchored.isEnabled = true
-        let wasAligned = isAligned
-        isAligned = true
-        if !wasAligned {
-            // Remembered patches only have a world position from here on; compare everything
-            // scanned so far against them, then freeze what was waiting for the anchor.
-            for patch in live.values { replaceRemembered(coveredBy: patch) }
-            for patch in pendingFreeze { replaceRemembered(coveredBy: patch) }
-        }
-        for patch in pendingFreeze { attachRemembered(patch) }
-        pendingFreeze.removeAll()
+    /// Writes the live set to cells while ARKit keeps maintaining it, so leaving the foreground
+    /// loses nothing; the cells stay hidden under the live patches and are rewritten when they freeze.
+    func saveLive() {
+        guard isAligned else { return }
+        for patch in live.values { writeCells(from: patch) }
         recount()
+    }
+
+    // MARK: Pins
+
+    var anchorIDs: [UUID] { Array(anchors.keys) }
+
+    func hasAnchor(_ id: UUID) -> Bool { anchors[id] != nil }
+
+    /// Session-origin positions of every pin: tracked ones where visionOS reports them, the rest
+    /// estimated through the nearest tracked pin. Empty while nothing is tracked.
+    var anchorPositions: [SIMD3<Float>] {
+        anchors.values.compactMap { anchor in
+            if let originFromAnchor = anchor.originFromAnchor { return Self.translation(originFromAnchor) }
+            guard let via = nearestTracked(toScan: Self.translation(anchor.scanFromAnchor)) else { return nil }
+            return Self.translation(originFromScan(via: via) * anchor.scanFromAnchor)
+        }
+    }
+
+    func originFromScan(near position: SIMD3<Float>) -> simd_float4x4? {
+        nearestTracked(toOrigin: position).map(originFromScan(via:))
+    }
+
+    func addAnchor(id: UUID, scanFromAnchor: simd_float4x4, originFromAnchor: simd_float4x4) {
+        anchors[id] = Anchor(scanFromAnchor: scanFromAnchor, originFromAnchor: originFromAnchor, group: makeGroup())
+        if let project {
+            ScanStore.saveAnchors(
+                anchors.map { ScanAnchorRecord(id: $0.key, scanFromAnchor: Self.columns($0.value.scanFromAnchor)) },
+                project: project)
+        }
+        refreshAlignment()
+    }
+
+    func anchorUpdated(_ id: UUID, originFromAnchor: simd_float4x4, tracked: Bool) {
+        guard anchors[id] != nil else { return }
+        anchors[id]?.originFromAnchor = tracked ? originFromAnchor : nil
+        refreshAlignment()
     }
 
     // MARK: Project
 
-    func load(project: String, patches: [ScanPatch]) {
+    func load(project: String, anchors: [ScanAnchorRecord], cells: [CellKey: ScanCellRecord]) {
         self.project = project
         removeAll()
-        for stored in patches {
-            var descriptor = MeshDescriptor()
-            descriptor.positions = MeshBuffer(Self.positions(stored.vertices))
-            descriptor.primitives = .triangles(Self.unpacked(stored.indices, as: UInt32.self))
-            guard let mesh = try? MeshResource.generate(from: [descriptor]) else { continue }
-            var patch = makePatch(parent: anchored, id: stored.id)
-            patch.occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
-            patch.wireframe.model = ModelComponent(mesh: mesh, materials: [rememberedMaterial])
-            patch.occluder.transform = Transform(matrix: Self.matrix(stored.transform))
-            patch.vertices = stored.vertices
-            patch.indices = stored.indices
-            remembered.append(patch)
+        for record in anchors {
+            self.anchors[record.id] = Anchor(scanFromAnchor: Self.matrix(record.scanFromAnchor), originFromAnchor: nil, group: makeGroup())
         }
+        for (key, record) in cells { setCell(key, record) }
         recount()
     }
 
@@ -141,61 +174,163 @@ final class ScanMesh {
 
     private func removeAll() {
         live.values.forEach { $0.occluder.removeFromParent() }
-        remembered.forEach { $0.occluder.removeFromParent() }
         pendingFreeze.forEach { $0.occluder.removeFromParent() }
+        anchors.values.forEach { $0.group.removeFromParent() }
         live.removeAll()
-        remembered.removeAll()
         pendingFreeze.removeAll()
-        anchored.isEnabled = false
+        cells.removeAll()
+        anchors.removeAll()
+        coverCounts.removeAll()
+        rememberedRoot.isEnabled = false
         isAligned = false
     }
 
-    private func freeze(_ patch: Patch) {
-        patch.wireframe.model?.materials = [rememberedMaterial]
-        if isAligned {
-            attachRemembered(patch)
+    /// Places every pin's group: by its own tracked pose, else by the nearest tracked pin's estimate
+    /// of the scan frame. Gaining the first tracked pin commits what was frozen without one.
+    private func refreshAlignment() {
+        let aligned = anchors.values.contains { $0.originFromAnchor != nil }
+        for (id, anchor) in anchors {
+            let via = anchor.originFromAnchor != nil ? id : nearestTracked(toScan: Self.translation(anchor.scanFromAnchor))
+            if let via { anchor.group.transform = Transform(matrix: originFromScan(via: via)) }
+        }
+        rememberedRoot.isEnabled = aligned
+        let wasAligned = isAligned
+        isAligned = aligned
+        guard aligned != wasAligned else { return }
+        if aligned {
+            for id in live.keys {
+                var patch = live[id]!
+                cover(&patch)
+                live[id] = patch
+            }
+            for patch in pendingFreeze { commit(patch) }
+            pendingFreeze.removeAll()
         } else {
+            for id in live.keys { live[id]?.covering = [] }
+            coverCounts.removeAll()
+            cells.values.forEach { $0.occluder.isEnabled = true }
+        }
+        recount()
+    }
+
+    private func originFromScan(via id: UUID) -> simd_float4x4 {
+        let anchor = anchors[id]!
+        return anchor.originFromAnchor! * anchor.scanFromAnchor.inverse
+    }
+
+    private func nearestTracked(toOrigin position: SIMD3<Float>) -> UUID? {
+        anchors.lazy
+            .compactMap { id, anchor in anchor.originFromAnchor.map { (id, simd_distance(Self.translation($0), position)) } }
+            .min { $0.1 < $1.1 }?.0
+    }
+
+    private func nearestTracked(toScan position: SIMD3<Float>) -> UUID? {
+        anchors.lazy
+            .filter { $0.value.originFromAnchor != nil }
+            .min { simd_distance(Self.translation($0.value.scanFromAnchor), position) < simd_distance(Self.translation($1.value.scanFromAnchor), position) }?
+            .key
+    }
+
+    private func cover(_ patch: inout Patch) {
+        guard let originFromScan = originFromScan(near: patch.position) else { return }
+        let keys = ScanGrid.keys(of: patch.geometry, scanFromGeometry: Self.columns(originFromScan.inverse * patch.originFromPatch))
+        for key in patch.covering.subtracting(keys) { release(key) }
+        for key in keys.subtracting(patch.covering) {
+            coverCounts[key, default: 0] += 1
+            cells[key]?.occluder.isEnabled = false
+        }
+        patch.covering = keys
+    }
+
+    private func release(_ key: CellKey) {
+        let remaining = (coverCounts[key] ?? 0) - 1
+        if remaining > 0 {
+            coverCounts[key] = remaining
+        } else {
+            coverCounts[key] = nil
+            cells[key]?.occluder.isEnabled = true
+        }
+    }
+
+    private func freeze(_ patch: Patch) {
+        if isAligned {
+            commit(patch)
+        } else {
+            patch.wireframe.model?.materials = [rememberedMaterial]
             pendingFreeze.append(patch)
         }
     }
 
-    private func attachRemembered(_ patch: Patch) {
-        patch.occluder.setParent(anchored, preservingWorldTransform: true)
-        remembered.append(patch)
-        guard let project else { return }
-        ScanStore.save(
-            ScanPatch(id: patch.id, transform: Self.columns(patch.occluder.transform.matrix),
-                      vertices: patch.vertices, indices: patch.indices),
-            project: project)
+    private func commit(_ patch: Patch) {
+        for key in patch.covering { release(key) }
+        writeCells(from: patch)
+        patch.occluder.removeFromParent()
     }
 
-    /// ARKit tiles space into fixed chunks, so a new live patch whose bounds contain a remembered
-    /// patch's centre is the same chunk scanned again: the remembered copy and its file go away,
-    /// and the live patch is saved in its place when it is frozen.
-    private func replaceRemembered(coveredBy patch: Patch) {
-        guard isAligned else { return }
-        let bounds = patch.occluder.visualBounds(relativeTo: nil)
-        remembered.removeAll { candidate in
-            let center = candidate.occluder.visualBounds(relativeTo: nil).center
-            guard bounds.contains(center) else { return false }
-            candidate.occluder.removeFromParent()
-            if let project { ScanStore.remove(id: candidate.id, project: project) }
-            return true
+    /// Bins the chunk into cells owned by the tracked pin nearest each cell, expressed through that
+    /// pin's estimate of the scan frame, and merges each with what the cell already holds.
+    private func writeCells(from patch: Patch) {
+        guard let nearest = nearestTracked(toOrigin: patch.position), let box = ScanGrid.bounds(of: patch.geometry) else { return }
+        let scanFromPatch = originFromScan(via: nearest).inverse * patch.originFromPatch
+        for (key, part) in ScanGrid.bin(patch.geometry, scanFromGeometry: Self.columns(scanFromPatch)) {
+            let owner = nearestTracked(toScan: key.center) ?? nearest
+            let ownerScanFromPatch = originFromScan(via: owner).inverse * patch.originFromPatch
+            let fresh = ScanGrid.transformed(part, by: Self.columns(ownerScanFromPatch))
+            let geometry = cells[key].map {
+                ScanGrid.merged(old: $0.record.geometry, replacingInside: box, boxFromOld: Self.columns(ownerScanFromPatch.inverse), with: fresh)
+            } ?? fresh
+            let record = ScanCellRecord(owner: owner, geometry: geometry)
+            setCell(key, record)
+            if let project { ScanStore.save(record, key: key, project: project) }
         }
     }
 
-    private func makePatch(parent: Entity, id: UUID = UUID()) -> Patch {
+    private func setCell(_ key: CellKey, _ record: ScanCellRecord) {
+        cells[key]?.occluder.removeFromParent()
+        cells[key] = nil
+        guard let group = anchors[record.owner]?.group, let mesh = Self.mesh(record.geometry) else { return }
+        let (occluder, wireframe) = makeEntities(parent: group)
+        occluder.model = ModelComponent(mesh: mesh, materials: [OcclusionMaterial()])
+        wireframe.model = ModelComponent(mesh: mesh, materials: [rememberedMaterial])
+        occluder.isEnabled = coverCounts[key] == nil
+        cells[key] = Cell(occluder: occluder, wireframe: wireframe, record: record)
+    }
+
+    private func makeGroup() -> Entity {
+        let group = Entity()
+        group.name = "scanPin"
+        rememberedRoot.addChild(group)
+        return group
+    }
+
+    private func makePatch() -> Patch {
+        let (occluder, wireframe) = makeEntities(parent: liveRoot)
+        return Patch(occluder: occluder, wireframe: wireframe)
+    }
+
+    private func makeEntities(parent: Entity) -> (occluder: ModelEntity, wireframe: ModelEntity) {
         let occluder = ModelEntity()
         let wireframe = ModelEntity()
         wireframe.isEnabled = isVisible
         occluder.addChild(wireframe)
         parent.addChild(occluder)
-        return Patch(id: id, occluder: occluder, wireframe: wireframe)
+        return (occluder, wireframe)
     }
 
+    /// Counts cells, so a live chunk over remembered cells is not counted twice and freezing it into
+    /// them does not drop the count; a chunk not yet placed on the grid counts as one.
     private func recount() {
-        patchCount = live.count + remembered.count + pendingFreeze.count
-        rememberedCount = remembered.count
+        let keys = live.values.reduce(into: Set(cells.keys)) { $0.formUnion($1.covering) }
+        patchCount = keys.count + pendingFreeze.count + live.values.filter { $0.covering.isEmpty }.count
+        rememberedCount = cells.count
+    }
+
+    private static func mesh(_ geometry: ScanGeometry) -> MeshResource? {
+        guard !geometry.isEmpty else { return nil }
+        var descriptor = MeshDescriptor()
+        descriptor.positions = MeshBuffer(ScanGrid.positions(geometry.vertices))
+        descriptor.primitives = .triangles(ScanGrid.indices(geometry.indices))
+        return try? MeshResource.generate(from: [descriptor])
     }
 
     // MARK: Geometry packing (float32 xyz triples; uint32 indices, three per triangle)
@@ -231,17 +366,8 @@ final class ScanMesh {
         return data
     }
 
-    private static func positions(_ data: Data) -> [SIMD3<Float>] {
-        let floats = unpacked(data, as: Float.self)
-        return stride(from: 0, to: floats.count - 2, by: 3).map { SIMD3(floats[$0], floats[$0 + 1], floats[$0 + 2]) }
-    }
-
-    // Bytes decoded from a property list carry no alignment guarantee, so read them unaligned.
-    private static func unpacked<T>(_ data: Data, as: T.Type) -> [T] {
-        let size = MemoryLayout<T>.stride
-        return data.withUnsafeBytes { bytes in
-            (0..<(bytes.count / size)).map { bytes.loadUnaligned(fromByteOffset: $0 * size, as: T.self) }
-        }
+    private nonisolated static func translation(_ m: simd_float4x4) -> SIMD3<Float> {
+        SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
     }
 
     private static func columns(_ m: simd_float4x4) -> [Float] {

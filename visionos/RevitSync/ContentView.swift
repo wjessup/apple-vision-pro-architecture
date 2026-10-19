@@ -34,6 +34,7 @@ struct ContentView: View {
             .tabItem { Label("Connection", systemImage: connectionIcon) }
         }
         .onChange(of: scenePhase) { _, phase in
+            if phase != .active { model.scene.scanMesh.saveLive() }
             guard phase == .active, case .failed = model.connection else { return }
             Task { await model.connect() }
         }
@@ -197,9 +198,9 @@ struct ContentView: View {
                 .confirmationDialog("Clear the scan for this project?", isPresented: $confirmClearScan, titleVisibility: .visible) {
                     Button("Clear scan", role: .destructive) { model.scene.clearScan() }
                 } message: {
-                    Text("Every patch kept for this project is deleted from the headset. Scanning starts again from where you are.")
+                    Text("Every piece kept for this project is deleted from the headset. Scanning starts again from where you are.")
                 }
-            Text("Trees, people and other real things the headset has scanned hide the parts of the model behind them. Patches you walk away from are kept and saved per project, so the scan grows to cover the whole property and comes back next time you open the project here. Turn this on to see the scan as a cyan wireframe; remembered patches are dimmer.")
+            Text("Trees, people and other real things the headset has scanned hide the parts of the model behind them. Pieces you walk away from are kept and saved per project, so the scan grows to cover the whole property and comes back next time you open the project here, wherever you start. Turn this on to see the scan as a cyan wireframe; remembered pieces are dimmer.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -207,7 +208,7 @@ struct ContentView: View {
 
     private var scanStatus: String {
         let scan = model.scene.scanMesh
-        let count = "\(scan.patchCount) patch\(scan.patchCount == 1 ? "" : "es") kept"
+        let count = "\(scan.patchCount) piece\(scan.patchCount == 1 ? "" : "s") kept"
         return scan.isAligned || scan.rememberedCount == 0 ? count : "\(count) · aligning to previous scan…"
     }
 }

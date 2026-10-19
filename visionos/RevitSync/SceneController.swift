@@ -11,6 +11,8 @@ struct Placement: Codable, Equatable {
     var scale: Float
     var anchorID: UUID?
     var lockedCorners: [Int]?
+    /// Ground-floor corners (model space) of the model this placement was set with.
+    var footprint: [SIMD3<Float>]?
 
     static let tabletop = Placement(position: [0, 0.8, -1.0], yaw: 0, scale: ScalePreset.fiftieth.rawValue)
 }
@@ -67,6 +69,8 @@ final class SceneController {
     private(set) var placement = Placement.tabletop
     private(set) var mode = PlacementMode.basic
     private(set) var corners: [SIMD3<Float>]?
+    /// The loaded model's ground-floor corners are more than a foot from the placed house's.
+    private(set) var footprintMismatch = false
     private var inputLocked = false
     private var pinTask: Task<Void, Never>?
     private(set) var project: String?
@@ -83,8 +87,8 @@ final class SceneController {
     private static let lockedCornerMaterial = cornerMaterial(.systemGreen, opacity: 1)
     private static let unavailableCornerMaterial = cornerMaterial(.systemGray, opacity: 0.4)
 
-    // At real size a footprint corner sits inside the walls and usually below the real floor
-    // (footings), where the model and the scanned-room occluder would hide it, so corner balls
+    // At real size a footprint corner sits inside the walls at floor level, where the model and the
+    // scanned-room occluder would hide it, so corner balls
     // skip the depth test and draw in the transparent pass, after opaque geometry.
     private static func cornerMaterial(_ color: UIColor, opacity: Float) -> UnlitMaterial {
         var material = UnlitMaterial(color: color)
@@ -289,9 +293,29 @@ final class SceneController {
         var stack = [entity]
         while let current = stack.popLast() {
             stack.append(contentsOf: current.children)
-            outline.append(contentsOf: Footprint.hull(modelPoints(of: current)))
+            outline.append(contentsOf: Footprint.hull(groundSection(of: current)))
         }
         return Footprint.hull(outline)
+    }
+
+    private func groundSection(of entity: Entity) -> [SIMD3<Float>] {
+        guard let mesh = entity.components[ModelComponent.self]?.mesh else { return [] }
+        let toModel = entity.transformMatrix(relativeTo: model)
+        let contents = mesh.contents
+        var points: [SIMD3<Float>] = []
+        for instance in contents.instances {
+            guard let meshModel = contents.models[instance.model] else { continue }
+            let transform = toModel * instance.transform
+            for part in meshModel.parts {
+                guard let indices = part.triangleIndices?.elements else { continue }
+                let positions = part.positions.elements.map { p -> SIMD3<Float> in
+                    let q = transform * SIMD4(p, 1)
+                    return [q.x, q.y, q.z]
+                }
+                points.append(contentsOf: Footprint.groundSection(positions: positions, indices: indices))
+            }
+        }
+        return points
     }
 
     /// Model-space positions of one entity's own mesh (not its children's).
@@ -317,6 +341,14 @@ final class SceneController {
         corners = Footprint.corners(of: partitions.values.flatMap(\.outline))
         if let corners {
             zip(cornerBalls, corners).forEach { $0.position = $1 }
+            if let house = placement.footprint {
+                footprintMismatch = !Footprint.sameHouse(corners, house)
+            } else {
+                placement.footprint = corners
+                placement.save()
+            }
+        } else {
+            footprintMismatch = false
         }
         refreshCornerBalls()
     }
@@ -631,6 +663,11 @@ final class SceneController {
     }
 
     func commitPlacement() {
+        // The model placed last is the house every other model is checked against.
+        if let corners {
+            placement.footprint = corners
+            footprintMismatch = false
+        }
         placement.save()
         pushVoids()
         pinTask = Task { [previous = pinTask] in

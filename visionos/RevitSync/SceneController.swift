@@ -188,7 +188,7 @@ final class SceneController {
         model.addChild(entity)
         partitions[partitionID] = (sha256, entity, outline(of: entity))
         refreshCorners()
-        await refreshCollisionAsync()
+        refreshCollision()
     }
 
     func remove(partitionID: String) {
@@ -244,46 +244,35 @@ final class SceneController {
         Task { await refreshCollisionAsync() }
     }
 
-    // Measuring needs taps on the real surfaces, so each partition mesh gets an exact collider
-    // instead of the whole-model box; the shapes are cached per partition load. Each mesh also
-    // gets its own input target so the tap reports that mesh, not `root`, as its entity.
+    // Each partition mesh gets an exact collider (cached per partition load) rather than one
+    // whole-model box: a real-size model's box encloses the user, and a gaze ray starting inside a
+    // collider hits it at distance zero, stealing input from the tools panel and windows in front.
+    // Each mesh also gets its own input target so a tap reports that mesh, not `root`.
+    private var meshCollidersWanted: Bool { measuring || (mode == .basic && !inputLocked) }
+
     private func refreshCollisionAsync() async {
         handle.isEnabled = !inputLocked && !measuring && mode != .corners
-        if measuring {
-            root.components.remove(CollisionComponent.self)
+        if meshCollidersWanted {
             for (id, partition) in partitions where meshShapes[id] == nil {
                 meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
             }
-            let tasks = meshShapes
-            preparingMeasure = true
-            var ready: [[(entity: Entity, shape: ShapeResource)]] = []
-            for task in tasks.values { ready.append(await task.value) }
-            preparingMeasure = false
-            guard measuring else { return }
-            for shapes in ready {
-                for (entity, shape) in shapes where entity.parent != nil {
+        }
+        let tasks = meshShapes
+        preparingMeasure = measuring
+        var ready: [[(entity: Entity, shape: ShapeResource)]] = []
+        for task in tasks.values { ready.append(await task.value) }
+        preparingMeasure = false
+        for shapes in ready {
+            for (entity, shape) in shapes {
+                if meshCollidersWanted, entity.parent != nil {
                     entity.components.set(CollisionComponent(shapes: [shape], isStatic: true))
                     entity.components.set(InputTargetComponent())
+                } else {
+                    entity.components.remove(CollisionComponent.self)
+                    entity.components.remove(InputTargetComponent.self)
                 }
             }
-            return
         }
-        for task in meshShapes.values {
-            for (entity, _) in await task.value {
-                entity.components.remove(CollisionComponent.self)
-                entity.components.remove(InputTargetComponent.self)
-            }
-        }
-        guard !measuring else { return }
-        guard mode == .basic else {
-            root.components.remove(CollisionComponent.self)
-            return
-        }
-        let bounds = model.visualBounds(relativeTo: root)
-        let extents = simd_max(bounds.extents, SIMD3<Float>(repeating: 0.2))
-        root.components.set(CollisionComponent(shapes: [
-            .generateBox(size: extents).offsetBy(translation: bounds.center)
-        ]))
     }
 
     // MARK: Placement

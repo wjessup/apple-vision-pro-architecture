@@ -90,8 +90,10 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    holes cut out. Void edges are as fine as the scan's triangles, roughly 5–15 cm.
 6. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
    *Scale* switch (at 1:20, 1:50, 1:100 or any other scale the *Measure* toggle is greyed out and
-   the panel says *Switch to 1:1 Real size to measure*). Turn on *Measure* in the tools panel;
-   while it is on, pinching doesn't move the model. Look at a spot on the model and pinch to drop a yellow dot, then look
+   the panel says *Switch to 1:1 Real size to measure*). *Measure* in the tools panel is on
+   whenever the room opens and at every return to 1:1; the model's hit shapes are built as each
+   level loads, so it is ready at once. While it is on, pinching doesn't move the model — turn it
+   off to move or align the model. Look at a spot on the model and pinch to drop a yellow dot, then look
    at a second spot and pinch again: a yellow line appears between them, labelled with the
    distance in feet and inches (nearest ¼"). Tap a label, then the trash button next to it, to
    delete that measurement. Measurements are saved per project and move with the model. They

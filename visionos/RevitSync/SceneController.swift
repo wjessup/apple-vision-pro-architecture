@@ -115,6 +115,7 @@ final class SceneController {
     }
 
     private(set) var measuring = false
+    private var measureOn = true
     private(set) var preparingMeasure = false
     private(set) var measurements: [Measurement] = []
     private(set) var pendingPoint: SIMD3<Float>?
@@ -311,14 +312,13 @@ final class SceneController {
     // whole-model box: a real-size model's box encloses the user, and a gaze ray starting inside a
     // collider hits it at distance zero, stealing input from the tools panel and windows in front.
     // Each mesh also gets its own input target so a tap reports that mesh, not `root`.
+    // Shapes are generated as soon as a partition loads so measuring never waits on them.
     private var meshCollidersWanted: Bool { measuring || (mode == .basic && !inputLocked) }
 
     private func refreshCollisionAsync() async {
         handle.isEnabled = !inputLocked && !measuring && mode != .corners
-        if meshCollidersWanted {
-            for (id, partition) in partitions where meshShapes[id] == nil {
-                meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
-            }
+        for (id, partition) in partitions where meshShapes[id] == nil {
+            meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
         }
         let tasks = meshShapes
         preparingMeasure = measuring
@@ -350,9 +350,16 @@ final class SceneController {
 
     var atRealSize: Bool { abs(placement.scale - ScalePreset.full.rawValue) < 0.0001 }
 
-    func setMeasuring(_ measuring: Bool) {
-        self.measuring = measuring && atRealSize
-        if !measuring { setPending(nil) }
+    func setMeasuring(_ on: Bool) {
+        measureOn = on
+        updateMeasuring()
+    }
+
+    private func updateMeasuring() {
+        let now = measureOn && atRealSize
+        guard now != measuring else { return }
+        measuring = now
+        if !now { setPending(nil) }
         refreshCollision()
     }
 
@@ -632,10 +639,8 @@ final class SceneController {
         updateCornerBallSize()
         // Measurements are only taken and shown at real size.
         measureRoot.isEnabled = atRealSize
-        if !atRealSize {
-            if selectedMeasurement != nil { selectedMeasurement = nil }
-            if measuring { setMeasuring(false) }
-        }
+        if !atRealSize, selectedMeasurement != nil { selectedMeasurement = nil }
+        updateMeasuring()
     }
 
     private static func normalized(_ yaw: Float) -> Float {

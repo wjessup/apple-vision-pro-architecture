@@ -58,7 +58,10 @@ struct ImmersiveView: View {
         .simultaneousGesture(rotate)
         .simultaneousGesture(measureTap)
         .simultaneousGesture(tap)
-        .onAppear { model.immersiveOpen = true }
+        .onAppear {
+            model.immersiveOpen = true
+            scene.setMeasuring(true)
+        }
         // The main window may be closed while the space stays open, so the space saves too.
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { scene.scanMesh.saveLive() }

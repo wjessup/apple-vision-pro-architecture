@@ -31,7 +31,9 @@ struct ToolsPanel: View {
         if !scene.atRealSize { return "Switch to 1:1 Real size to measure" }
         guard scene.measuring else { return nil }
         if scene.preparingMeasure { return "Preparing…" }
-        return scene.pendingPoint == nil ? "Pinch a spot on the model…" : "Pinch a second spot…"
+        return scene.pendingPoint == nil
+            ? "Pinch a spot on the model to measure. Turn off Measure to move the model."
+            : "Pinch a second spot…"
     }
 }
 

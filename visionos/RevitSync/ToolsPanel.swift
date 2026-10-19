@@ -209,12 +209,12 @@ struct PlacementControls: View {
         }
     }
 
-    /// The slider nudges up to ±10 cm from where the drag began and recentres on release,
+    /// The slider moves up to ±3 m from where the drag began and recentres on release,
     /// so it stays fine-grained wherever the model sits.
     private func translationControl(axis: Int) -> some View {
         let scene = model.scene
         return VStack(alignment: .leading) {
-            Text("\(["X", "Y", "Z"][axis]) \(String(format: "%.3f", scene.placement.position[axis])) m")
+            Text("\(["X", "Y", "Z"][axis]) \(String(format: "%.2f", scene.placement.position[axis] / 0.3048)) ft")
             Slider(
                 value: Binding(
                     get: { Double(nudge[axis]) },
@@ -226,7 +226,7 @@ struct PlacementControls: View {
                         position[axis] += Float(value)
                         scene.setPosition(position)
                     }),
-                in: -0.1...0.1,
+                in: -3...3,
                 onEditingChanged: { editing in
                     if !editing {
                         nudgeStart = nil
@@ -235,10 +235,10 @@ struct PlacementControls: View {
                     sliderEditing(editing)
                 })
             HStack {
-                stepButton("−1 cm") { translate(axis: axis, by: -0.01) }
-                stepButton("−1 mm") { translate(axis: axis, by: -0.001) }
-                stepButton("+1 mm") { translate(axis: axis, by: 0.001) }
-                stepButton("+1 cm") { translate(axis: axis, by: 0.01) }
+                stepButton("−1 ft") { translate(axis: axis, by: -0.3048) }
+                stepButton("−1 in") { translate(axis: axis, by: -0.0254) }
+                stepButton("+1 in") { translate(axis: axis, by: 0.0254) }
+                stepButton("+1 ft") { translate(axis: axis, by: 0.3048) }
             }
         }
     }

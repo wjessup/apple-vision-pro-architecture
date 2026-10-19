@@ -32,6 +32,9 @@ struct ToolsPanel: View {
                 iconButton("Finish polygon", systemImage: "checkmark.circle") { scene.finishPolygon() }
                     .disabled(scene.pendingPolygon.count < 3)
             }
+            if scene.floorElevation != 0 {
+                iconButton("Back to ground floor", systemImage: "house") { scene.goToFloor(0) }
+            }
             Button(role: .destructive) {
                 scene.deleteSelected()
             } label: {
@@ -60,6 +63,20 @@ struct ToolsPanel: View {
         }
         .buttonStyle(.borderless)
         .help(title)
+    }
+}
+
+struct StairButton: View {
+    let up: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(up ? "Go up" : "Go down", systemImage: up ? "arrow.up" : "arrow.down")
+        }
+        .font(.title3)
+        .padding(.horizontal, 6)
+        .glassBackgroundEffect(in: Capsule())
     }
 }
 

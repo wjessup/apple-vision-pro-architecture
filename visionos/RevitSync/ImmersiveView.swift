@@ -41,6 +41,16 @@ struct ImmersiveView: View {
                 label.components.set(BillboardComponent())
                 anchor.addChild(label)
             }
+            for stair in scene.stairs {
+                for up in [true, false] {
+                    let id = SceneController.stairButtonID(stair, up: up)
+                    guard let button = attachments.entity(for: id),
+                          let anchor = scene.stairAnchor(id: id),
+                          button.parent !== anchor else { continue }
+                    button.components.set(BillboardComponent())
+                    anchor.addChild(button)
+                }
+            }
         } attachments: {
             Attachment(id: "tools") {
                 // visionOS can't move an open window, but a reopened one appears in front of the
@@ -54,6 +64,14 @@ struct ImmersiveView: View {
             ForEach(scene.measurements) { measurement in
                 Attachment(id: measurement.id) {
                     MeasurementLabel(measurement: measurement).environment(model)
+                }
+            }
+            ForEach(scene.stairs) { stair in
+                Attachment(id: SceneController.stairButtonID(stair, up: true)) {
+                    StairButton(up: true) { scene.goToFloor(stair.top.y) }
+                }
+                Attachment(id: SceneController.stairButtonID(stair, up: false)) {
+                    StairButton(up: false) { scene.goToFloor(stair.bottom.y) }
                 }
             }
         }
@@ -108,9 +126,11 @@ struct ImmersiveView: View {
                         guard scene.cornerState(corner) == .free else { return scene.warnCornerLocked() }
                         draggedCorner = corner
                         dragStart = start
-                    } else if isDescendant(value.entity, of: scene.root), !isDescendant(value.entity, of: scene.marksRoot) {
+                    } else if isDescendant(value.entity, of: scene.root), !isDescendant(value.entity, of: scene.marksRoot),
+                              !isDescendant(value.entity, of: scene.stairRoot) {
                         guard !scene.cornerLocked else { return scene.warnCornerLocked() }
-                        dragStart = scene.root.position(relativeTo: nil)
+                        // The root sits below the placement while an upper floor is shown.
+                        dragStart = scene.placement.position
                     } else {
                         return
                     }

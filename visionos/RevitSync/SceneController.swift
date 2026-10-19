@@ -49,6 +49,13 @@ enum PlacementMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Both walkable ends of one staircase, in model space.
+struct Stair: Identifiable, Equatable {
+    let id: String
+    let bottom: SIMD3<Float>
+    let top: SIMD3<Float>
+}
+
 enum CornerState {
     case free
     case locked
@@ -77,6 +84,7 @@ final class SceneController {
     let cornerBalls: [ModelEntity]
     let scanMesh = ScanMesh()
     let marksRoot = Entity()
+    let stairRoot = Entity()
     let panelRoot = Entity()
     let panelGrip: ModelEntity
 
@@ -91,7 +99,11 @@ final class SceneController {
     private var creatingScanAnchor = false
     private var scanAnchorAddFailed = false
     private var scanEpoch = 0
-    private var partitions: [String: (sha256: String, entity: Entity, outline: [SIMD3<Float>], voids: [Footprint.Void])] = [:]
+    private var partitions: [String: (sha256: String, entity: Entity, outline: [SIMD3<Float>], voids: [Footprint.Void], stairs: [Stair])] = [:]
+    private(set) var stairs: [Stair] = []
+    /// Model height (metres) of the floor put on the real floor; session-only, never saved.
+    private(set) var floorElevation: Float = 0
+    private var stairAnchors: [String: Entity] = [:]
     var isGesturing = false
     var scaleLocked = true
 
@@ -221,6 +233,8 @@ final class SceneController {
         marksRoot.addChild(pendingDot)
         marksRoot.addChild(pendingLayer)
         root.addChild(marksRoot)
+        stairRoot.name = "stairs"
+        root.addChild(stairRoot)
         refreshCollision()
         applyPlacement()
         let scan = ScanStore.load()
@@ -262,6 +276,7 @@ final class SceneController {
         selection = nil
         redrawMeasurements()
         redrawVoids()
+        floorElevation = 0
         applyPlacement()
     }
 
@@ -272,7 +287,9 @@ final class SceneController {
         meshShapes[partitionID] = nil
         model.addChild(entity)
         let voids = extractVoids(from: entity)
-        partitions[partitionID] = (sha256, entity, outline(of: entity), voids)
+        let stairs = extractStairs(from: entity)
+        partitions[partitionID] = (sha256, entity, outline(of: entity), voids, stairs)
+        refreshStairs()
         refreshCorners()
         refreshCollision()
         pushVoids()
@@ -282,6 +299,7 @@ final class SceneController {
         partitions[partitionID]?.entity.removeFromParent()
         partitions[partitionID] = nil
         meshShapes[partitionID] = nil
+        refreshStairs()
         refreshCollision()
         refreshCorners()
         pushVoids()
@@ -291,6 +309,7 @@ final class SceneController {
         partitions.values.forEach { $0.entity.removeFromParent() }
         partitions.removeAll()
         meshShapes.removeAll()
+        refreshStairs()
         refreshCollision()
         refreshCorners()
         pushVoids()
@@ -322,6 +341,58 @@ final class SceneController {
         }
         found.forEach { $0.removeFromParent() }
         return voids
+    }
+
+    /// Stair markers (`stair_e<id>_bottom` / `_top`) are empty Xforms; they are paired by element
+    /// and taken out of the tree like voids.
+    private func extractStairs(from entity: Entity) -> [Stair] {
+        var ends: [String: (bottom: SIMD3<Float>?, top: SIMD3<Float>?)] = [:]
+        var found: [Entity] = []
+        var stack = [entity]
+        while let current = stack.popLast() {
+            stack.append(contentsOf: current.children)
+            let name = current.name
+            guard name.hasPrefix("stair_e") else { continue }
+            let position = current.position(relativeTo: model)
+            if name.hasSuffix("_bottom") {
+                ends[String(name.dropLast("_bottom".count)), default: (nil, nil)].bottom = position
+            } else if name.hasSuffix("_top") {
+                ends[String(name.dropLast("_top".count)), default: (nil, nil)].top = position
+            } else {
+                continue
+            }
+            found.append(current)
+        }
+        found.forEach { $0.removeFromParent() }
+        return ends.compactMap { id, end in
+            guard let bottom = end.bottom, let top = end.top else { return nil }
+            return Stair(id: id, bottom: bottom, top: top)
+        }.sorted { $0.id < $1.id }
+    }
+
+    /// One anchor per stair end, a metre above it, carrying its Go up / Go down button.
+    private func refreshStairs() {
+        stairs = partitions.values.flatMap(\.stairs).sorted { $0.id < $1.id }
+        stairAnchors.values.forEach { $0.removeFromParent() }
+        stairAnchors.removeAll()
+        for stair in stairs {
+            for (key, at) in [(Self.stairButtonID(stair, up: true), stair.bottom), (Self.stairButtonID(stair, up: false), stair.top)] {
+                let anchor = Entity()
+                anchor.position = at + [0, 1, 0]
+                stairRoot.addChild(anchor)
+                stairAnchors[key] = anchor
+            }
+        }
+    }
+
+    static func stairButtonID(_ stair: Stair, up: Bool) -> String { "\(stair.id)-\(up ? "up" : "down")" }
+
+    func stairAnchor(id: String) -> Entity? { stairAnchors[id] }
+
+    func goToFloor(_ elevation: Float) {
+        floorElevation = elevation
+        applyPlacement()
+        pushVoids()
     }
 
     private func pushVoids() {
@@ -744,6 +815,8 @@ final class SceneController {
 
     func setMode(_ mode: PlacementMode) {
         self.mode = mode
+        // Corner balls are aligned against real-world spots on the ground.
+        if mode == .corners, floorElevation != 0 { goToFloor(0) }
         pivotMarker.isEnabled = mode == .precise
         refreshCollision()
         refreshCornerBalls()
@@ -886,7 +959,8 @@ final class SceneController {
     }
 
     private func applyPlacement() {
-        root.position = placement.position
+        if !atRealSize { floorElevation = 0 }
+        root.position = placement.position - [0, floorElevation * placement.scale, 0]
         root.orientation = simd_quatf(angle: placement.yaw, axis: [0, 1, 0])
         root.scale = SIMD3<Float>(repeating: placement.scale)
         handle.scale = SIMD3<Float>(repeating: 1 / placement.scale)
@@ -895,6 +969,7 @@ final class SceneController {
         updateCornerBallSize()
         // Measurements and voids are only taken and shown at real size.
         marksRoot.isEnabled = atRealSize
+        stairRoot.isEnabled = atRealSize
         if !atRealSize {
             if selection != nil { selection = nil }
             if toolActive { setTool(.none) }

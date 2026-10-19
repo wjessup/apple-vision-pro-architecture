@@ -80,6 +80,12 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    as a cyan wireframe so you can see what is doing the hiding; remembered patches are dimmer.
    The scan also hides the app's own window if it ends up behind a real object. The visionOS
    Simulator has no scan, so there nothing is hidden.
+   Elements marked with **Toggle Void** in Revit (a pool shell, a car ramp) are holes in the scan:
+   at 1:1 the scanned lawn or slab inside a void's outline, from the void's top down, stops hiding
+   the model, so the pool reads as dug into the real ground while the footings around it stay
+   hidden. The holes move with the model when you drag or re-pin it (they settle when the gesture
+   ends), the saved scan itself is untouched, and *Show scan mesh* draws the wireframe with the
+   holes cut out. Void edges are as fine as the scan's triangles, roughly 5–15 cm.
 6. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
    *Scale* switch (at 1:20, 1:50, 1:100 or any other scale the *Measure* toggle is greyed out and
    the panel says *Switch to 1:1 Real size to measure*). Turn on *Measure* in the tools panel;
@@ -109,8 +115,8 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/ServerBrowser.swift` | Bonjour discovery of `_revitsync._tcp` |
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
 | `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor, corner balls |
-| `RevitSync/Footprint.swift` | Plan-outline corner detection and the two-corner alignment solve (plain Swift) |
-| `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe; keeps and reloads patches the headset drops |
+| `RevitSync/Footprint.swift` | Plan-outline corner detection, the two-corner alignment solve, and `Void` volumes (plain Swift) |
+| `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe, cut around the model's voids; keeps and reloads patches the headset drops |
 | `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/` patches + anchor id |
 | `RevitSync/ImmersiveView.swift` | Mixed immersive space, gestures, the tools-panel and measurement-label attachments |
 | `RevitSync/ToolsPanel.swift` | Following tools panel (Bring window here, Measure), the window's placement controls, measurement labels |

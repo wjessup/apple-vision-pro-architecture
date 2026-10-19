@@ -20,6 +20,12 @@ visionOS app (consumer). Everything is plain HTTP + JSON on the local network.
 - Origin is the Revit **project base point**; level 0 sits at USD `y = 0`. "Pin at 1:1"
   therefore means "put this origin on my floor".
 - Colors are linear RGB (the add-in converts Revit's sRGB bytes).
+- **Voids.** A mesh prim named `void_e<elementId>` with `visibility = "invisible"` and no
+  material binding is not geometry to draw but empty space the design digs out of the real
+  ground (a pool, a car ramp). The consumer treats everything inside the prim's plan outline,
+  from its top downward, as a hole in its room scan, so the model shows through there instead
+  of being hidden by the scanned surface. The producer writes one per element the user marked
+  as *Vision Pro Void*.
 
 ## HTTP (base path `/api`)
 

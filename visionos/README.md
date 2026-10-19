@@ -70,14 +70,16 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 5. **Real world** — while the model is shown, the headset continuously scans what's around you
    and hides any part of the model that sits behind a real object: a tree, a fence, a person.
    The headset only scans about 5 m around you (less in bright sun), and foliage is captured as
-   coarse solid shapes, so close trees hide a rough lump rather than leaf-by-leaf. Patches you
+   coarse solid shapes, so close trees hide a rough lump rather than leaf-by-leaf. Pieces you
    walk away from are kept rather than dropped, so walking the property builds up a scan of all
-   of it; it is saved on the headset per project and comes back the next time you open that
-   project in the same place (the *Real world* section says *aligning to previous scan…* until
-   visionOS has recognised the spot). Walking back over an area replaces the kept patch with the
-   fresh scan. *Clear scan* throws the project's scan away — use it when you scan a different
-   site under the same project or the place has changed a lot. *Show scan mesh* draws the scan
-   as a cyan wireframe so you can see what is doing the hiding; remembered patches are dimmer.
+   of it; it is saved on the headset per project, pinned to the room every few metres as you
+   walk, and comes back the next time you open that project as soon as visionOS recognises any
+   of those spots (the *Real world* section says *aligning to previous scan…* until then).
+   Walking back over an area shows the fresh scan in place of the kept pieces it covers and
+   replaces them once you move on; nothing kept is dropped before its replacement is saved.
+   *Clear scan* throws the project's scan away — use it when you scan a different site under
+   the same project or the place has changed a lot. *Show scan mesh* draws the scan as a cyan
+   wireframe so you can see what is doing the hiding; remembered pieces are dimmer.
    The scan also hides the app's own window if it ends up behind a real object. The visionOS
    Simulator has no scan, so there nothing is hidden.
    Elements marked with **Toggle Void** in Revit (a pool shell, a car ramp) are holes in the scan:
@@ -116,8 +118,9 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
 | `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor, corner balls |
 | `RevitSync/Footprint.swift` | Plan-outline corner detection, the two-corner alignment solve, and `Void` volumes (plain Swift) |
-| `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe, cut around the model's voids; keeps and reloads patches the headset drops |
-| `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/` patches + anchor id |
+| `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe, cut around the model's voids; freezes chunks the headset drops into grid cells placed by the nearest scan pin |
+| `RevitSync/ScanGrid.swift` | 1 m scan-frame cells: triangle binning, per-cell merge (plain Swift) |
+| `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/anchors.json` + `cells/*.cell` |
 | `RevitSync/ImmersiveView.swift` | Mixed immersive space, gestures, the tools-panel and measurement-label attachments |
 | `RevitSync/ToolsPanel.swift` | Following tools panel (Bring window here, Measure), the window's placement controls, measurement labels |
 | `RevitSync/Measurements.swift` | Measurement model, feet-and-inches formatting, per-project storage |

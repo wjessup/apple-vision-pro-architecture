@@ -26,6 +26,11 @@ visionOS app (consumer). Everything is plain HTTP + JSON on the local network.
   everything inside the prim's plan outline, from its top downward, as a hole in its room scan,
   so the model shows through there instead of being hidden by the scanned surface. The producer
   writes one per element the user marked as *Vision Pro Void*.
+- **Stairs.** An `Xform` prim with no geometry named `stair_e<elementId>_bottom` or
+  `stair_e<elementId>_top` marks where one staircase is walked onto: just in front of its first
+  step and just past its last step. Its translation's `y` is the walking-surface height of that end
+  (model metres), so a consumer can put that floor on the real floor. The producer writes the pair
+  for every stair with runs; a consumer ignores an unpaired marker.
 
 ## HTTP (base path `/api`)
 

@@ -107,7 +107,8 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    that came from Revit are not drawn and can only be removed in Revit.
 6. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
    *Scale* switch (at 1:20, 1:50, 1:100 or any other scale the ruler icon in the tools panel is
-   greyed out). Tap the ruler to turn measuring on; while it is on, pinching doesn't move the
+   greyed out). Tap the ruler to turn measuring on — the model's hit shapes are built as each
+   level loads, so measuring is ready at once; while it is on, pinching doesn't move the
    model. Look at a spot on the model and pinch to drop a yellow dot, then look at a second spot
    and pinch again: a yellow line appears between them, labelled with the distance in feet and
    inches (nearest ¼"). Labels grow with distance so the numbers stay readable from across a

@@ -55,6 +55,18 @@ enum CornerState {
     case unavailable
 }
 
+enum Tool {
+    case none
+    case measure
+    case voidSurface
+    case voidPolygon
+}
+
+enum Selection: Equatable {
+    case measurement(UUID)
+    case void(UUID)
+}
+
 @MainActor
 @Observable
 final class SceneController {
@@ -64,7 +76,9 @@ final class SceneController {
     let pivotMarker: ModelEntity
     let cornerBalls: [ModelEntity]
     let scanMesh = ScanMesh()
-    let measureRoot = Entity()
+    let marksRoot = Entity()
+    let panelRoot = Entity()
+    let panelGrip: ModelEntity
 
     private(set) var placement = Placement.tabletop
     private(set) var mode = PlacementMode.basic
@@ -118,18 +132,27 @@ final class SceneController {
         return icon
     }
 
-    private(set) var measuring = false
-    private var measureOn = true
-    private(set) var preparingMeasure = false
+    private(set) var tool = Tool.none
+    var toolActive: Bool { tool != .none }
     private(set) var measurements: [Measurement] = []
     private(set) var pendingPoint: SIMD3<Float>?
-    var selectedMeasurement: UUID?
+    private(set) var voidMarks: [VoidMark] = []
+    private(set) var pendingPolygon: [SIMD3<Float>] = []
+    var selection: Selection? {
+        didSet { applyHighlight() }
+    }
     private var meshShapes: [String: Task<[(entity: Entity, shape: ShapeResource)], Never>] = [:]
     private var measureEntities: [UUID: Entity] = [:]
+    private var voidEntities: [UUID: Entity] = [:]
     private let pendingDot: ModelEntity
+    private let pendingLayer = Entity()
     private static let measureMaterial = UnlitMaterial(color: .systemYellow)
+    private static let voidMaterial = UnlitMaterial(color: .systemBlue)
+    private static let selectedMaterial = UnlitMaterial(color: .white)
     private var panelPlaced = false
     private var panelMoving = false
+    private static let defaultPanelOffset: SIMD3<Float> = [0, -0.3, -0.6]
+    private var panelOffset = SceneController.defaultPanelOffset
 
     var loadedPartitions: [String: String] { partitions.mapValues(\.sha256) }
 
@@ -155,6 +178,17 @@ final class SceneController {
         pivotMarker.isEnabled = false
 
         pendingDot = ModelEntity(mesh: .generateSphere(radius: 0.01), materials: [Self.measureMaterial])
+
+        var gripMaterial = UnlitMaterial(color: .white)
+        gripMaterial.blending = .transparent(opacity: 0.8)
+        panelGrip = ModelEntity(mesh: .generateBox(size: [0.12, 0.012, 0.012], cornerRadius: 0.006), materials: [gripMaterial])
+        panelGrip.name = "panelGrip"
+        panelGrip.position = [0, -0.045, 0]
+        panelGrip.components.set(CollisionComponent(shapes: [.generateBox(size: [0.14, 0.03, 0.03])]))
+        panelGrip.components.set(InputTargetComponent())
+        panelGrip.components.set(HoverEffectComponent())
+        panelRoot.name = "toolsPanel"
+        panelRoot.addChild(panelGrip)
 
         cornerBalls = Footprint.cornerNames.map { name in
             let ball = ModelEntity(mesh: .generateSphere(radius: 0.04), materials: [SceneController.freeCornerMaterial])
@@ -183,9 +217,10 @@ final class SceneController {
         cornerBalls.forEach { root.addChild($0) }
 
         pendingDot.isEnabled = false
-        measureRoot.name = "measurements"
-        measureRoot.addChild(pendingDot)
-        root.addChild(measureRoot)
+        marksRoot.name = "marks"
+        marksRoot.addChild(pendingDot)
+        marksRoot.addChild(pendingLayer)
+        root.addChild(marksRoot)
         refreshCollision()
         applyPlacement()
         let scan = ScanStore.load()
@@ -220,9 +255,13 @@ final class SceneController {
         self.project = project
         clear()
         measurements = .load(project: project)
+        voidMarks = .load(project: project)
         setPending(nil)
-        selectedMeasurement = nil
+        pendingPolygon = []
+        redrawPendingPolygon()
+        selection = nil
         redrawMeasurements()
+        redrawVoids()
         applyPlacement()
     }
 
@@ -286,7 +325,7 @@ final class SceneController {
     }
 
     private func pushVoids() {
-        scanMesh.setVoids(partitions.values.flatMap(\.voids), worldFromModel: model.transformMatrix(relativeTo: nil))
+        scanMesh.setVoids(partitions.values.flatMap(\.voids) + voidMarks.map(\.void), worldFromModel: model.transformMatrix(relativeTo: nil))
     }
 
     private func outline(of entity: Entity) -> [SIMD3<Float>] {
@@ -362,19 +401,18 @@ final class SceneController {
     // whole-model box: a real-size model's box encloses the user, and a gaze ray starting inside a
     // collider hits it at distance zero, stealing input from the tools panel and windows in front.
     // Each mesh also gets its own input target so a tap reports that mesh, not `root`.
-    // Shapes are generated as soon as a partition loads so measuring never waits on them.
-    private var meshCollidersWanted: Bool { measuring || (mode == .basic && !inputLocked) }
+    private var meshCollidersWanted: Bool { toolActive || (mode == .basic && !inputLocked) }
 
     private func refreshCollisionAsync() async {
-        handle.isEnabled = !inputLocked && !measuring && mode != .corners
-        for (id, partition) in partitions where meshShapes[id] == nil {
-            meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
+        handle.isEnabled = !inputLocked && !toolActive && mode != .corners
+        if meshCollidersWanted {
+            for (id, partition) in partitions where meshShapes[id] == nil {
+                meshShapes[id] = Task { await Self.staticShapes(for: partition.entity) }
+            }
         }
         let tasks = meshShapes
-        preparingMeasure = measuring
         var ready: [[(entity: Entity, shape: ShapeResource)]] = []
         for task in tasks.values { ready.append(await task.value) }
-        preparingMeasure = false
         for shapes in ready {
             for (entity, shape) in shapes {
                 if meshCollidersWanted, entity.parent != nil {
@@ -396,20 +434,15 @@ final class SceneController {
         refreshCollision()
     }
 
-    // MARK: Measurements
+    // MARK: Tools
 
     var atRealSize: Bool { abs(placement.scale - ScalePreset.full.rawValue) < 0.0001 }
 
-    func setMeasuring(_ on: Bool) {
-        measureOn = on
-        updateMeasuring()
-    }
-
-    private func updateMeasuring() {
-        let now = measureOn && atRealSize
-        guard now != measuring else { return }
-        measuring = now
-        if !now { setPending(nil) }
+    func setTool(_ tool: Tool) {
+        self.tool = atRealSize ? tool : .none
+        setPending(nil)
+        pendingPolygon = []
+        redrawPendingPolygon()
         refreshCollision()
     }
 
@@ -425,8 +458,60 @@ final class SceneController {
 
     func deleteMeasurement(id: UUID) {
         measurements.removeAll { $0.id == id }
-        if selectedMeasurement == id { selectedMeasurement = nil }
+        if selection == .measurement(id) { selection = nil }
         saveMeasurements()
+    }
+
+    /// The element's whole plan outline becomes the void, the same shape `extractVoids` builds for an
+    /// element marked as a void in Revit: every mesh named `e<elementId>_<n>` shares the hit mesh's prefix.
+    func addVoid(fromElement entity: Entity) {
+        guard entity.name.hasPrefix("e"), let underscore = entity.name.lastIndex(of: "_") else { return }
+        let prefix = String(entity.name[...underscore])
+        let points = Self.meshEntities(in: model).filter { $0.name.hasPrefix(prefix) }.flatMap(modelPoints(of:))
+        guard let top = points.map(\.y).max() else { return }
+        let outline = Footprint.hull(points)
+        guard outline.count >= 3 else { return }
+        voidMarks.append(VoidMark(outline: outline, top: top))
+        saveVoidMarks()
+    }
+
+    func addPolygonPoint(_ point: SIMD3<Float>) {
+        pendingPolygon.append(point)
+        redrawPendingPolygon()
+    }
+
+    func finishPolygon() {
+        guard pendingPolygon.count >= 3, let top = pendingPolygon.map(\.y).max() else { return }
+        voidMarks.append(VoidMark(outline: pendingPolygon, top: top))
+        pendingPolygon = []
+        redrawPendingPolygon()
+        saveVoidMarks()
+    }
+
+    func deleteSelected() {
+        switch selection {
+        case .measurement(let id):
+            deleteMeasurement(id: id)
+        case .void(let id):
+            voidMarks.removeAll { $0.id == id }
+            selection = nil
+            saveVoidMarks()
+        case nil:
+            return
+        }
+    }
+
+    /// The mark whose layer the entity belongs to; a measurement label's attachment is left to its own buttons.
+    func selection(of entity: Entity) -> Selection? {
+        var current: Entity? = entity
+        while let e = current, e.parent !== marksRoot {
+            if e.name == "label" { return nil }
+            current = e.parent
+        }
+        guard let layer = current else { return nil }
+        if let id = measureEntities.first(where: { $0.value === layer })?.key { return .measurement(id) }
+        if let id = voidEntities.first(where: { $0.value === layer })?.key { return .void(id) }
+        return nil
     }
 
     func labelAnchor(id: UUID) -> Entity? { measureEntities[id]?.findEntity(named: "label") }
@@ -442,42 +527,131 @@ final class SceneController {
         redrawMeasurements()
     }
 
+    private func saveVoidMarks() {
+        if let project { voidMarks.save(project: project) }
+        redrawVoids()
+        pushVoids()
+    }
+
+    // Lines carry a 4 cm box collider (the box scales with the line's length) and an input target, so
+    // gaze highlights them and a pinch selects the mark they belong to.
+    private static func lineEntity(radius: Float, material: UnlitMaterial) -> ModelEntity {
+        let line = ModelEntity(mesh: .generateCylinder(height: 1, radius: radius), materials: [material])
+        line.components.set(CollisionComponent(shapes: [.generateBox(size: [0.04, 1, 0.04])]))
+        line.components.set(InputTargetComponent())
+        line.components.set(HoverEffectComponent())
+        return line
+    }
+
+    private static func layout(_ line: Entity, from a: SIMD3<Float>, to b: SIMD3<Float>, scale s: Float) {
+        let delta = b - a
+        let length = simd_length(delta)
+        line.position = (a + b) / 2 * s
+        line.scale = [1, max(length * s, 0.0001), 1]
+        if length > 0 { line.orientation = simd_quatf(from: [0, 1, 0], to: delta / length) }
+    }
+
     private func redrawMeasurements() {
         measureEntities.values.forEach { $0.removeFromParent() }
         measureEntities.removeAll()
         for measurement in measurements {
             let layer = Entity()
-            let line = ModelEntity(mesh: .generateCylinder(height: 1, radius: 0.003), materials: [Self.measureMaterial])
-            let delta = measurement.b - measurement.a
-            if measurement.meters > 0 { line.orientation = simd_quatf(from: [0, 1, 0], to: delta / measurement.meters) }
-            layer.addChild(line)
+            layer.addChild(Self.lineEntity(radius: 0.003, material: Self.measureMaterial))
             for _ in 0..<2 {
                 layer.addChild(ModelEntity(mesh: .generateSphere(radius: 0.008), materials: [Self.measureMaterial]))
             }
             let label = Entity()
             label.name = "label"
             layer.addChild(label)
-            measureRoot.addChild(layer)
+            marksRoot.addChild(layer)
             measureEntities[measurement.id] = layer
         }
-        applyMeasureScale()
+        applyMarkScale()
+        applyHighlight()
     }
 
-    // Each measurement layer is counter-scaled so dots, lines and labels keep a constant real size;
+    private func redrawVoids() {
+        voidEntities.values.forEach { $0.removeFromParent() }
+        voidEntities.removeAll()
+        for mark in voidMarks {
+            let layer = Entity()
+            for _ in mark.outline {
+                layer.addChild(Self.lineEntity(radius: 0.004, material: Self.voidMaterial))
+            }
+            marksRoot.addChild(layer)
+            voidEntities[mark.id] = layer
+        }
+        applyMarkScale()
+        applyHighlight()
+    }
+
+    private func redrawPendingPolygon() {
+        pendingLayer.children.forEach { $0.removeFromParent() }
+        for _ in pendingPolygon {
+            pendingLayer.addChild(ModelEntity(mesh: .generateSphere(radius: 0.01), materials: [Self.voidMaterial]))
+        }
+        for _ in pendingPolygon.dropLast() {
+            pendingLayer.addChild(ModelEntity(mesh: .generateCylinder(height: 1, radius: 0.004), materials: [Self.voidMaterial]))
+        }
+        applyMarkScale()
+    }
+
+    // Each mark layer is counter-scaled so dots, lines and labels keep a constant real size;
     // positions inside it are therefore model coordinates multiplied by the model scale.
-    private func applyMeasureScale() {
+    private func applyMarkScale() {
         let s = placement.scale
-        pendingDot.scale = SIMD3<Float>(repeating: 1 / s)
+        let counter = SIMD3<Float>(repeating: 1 / s)
+        pendingDot.scale = counter
         for measurement in measurements {
             guard let layer = measureEntities[measurement.id] else { continue }
-            layer.scale = SIMD3<Float>(repeating: 1 / s)
+            layer.scale = counter
             let children = Array(layer.children)
-            let mid = (measurement.a + measurement.b) / 2 * s
-            children[0].position = mid
-            children[0].scale = [1, max(measurement.meters * s, 0.0001), 1]
+            Self.layout(children[0], from: measurement.a, to: measurement.b, scale: s)
             children[1].position = measurement.a * s
             children[2].position = measurement.b * s
-            children[3].position = mid + [0, 0.04, 0]
+            children[3].position = (measurement.a + measurement.b) / 2 * s + [0, 0.04, 0]
+        }
+        for mark in voidMarks {
+            guard let layer = voidEntities[mark.id] else { continue }
+            layer.scale = counter
+            let edges = Array(layer.children)
+            for (i, a) in mark.outline.enumerated() {
+                Self.layout(edges[i], from: a, to: mark.outline[(i + 1) % mark.outline.count], scale: s)
+            }
+        }
+        pendingLayer.scale = counter
+        let pending = Array(pendingLayer.children)
+        for (i, point) in pendingPolygon.enumerated() {
+            pending[i].position = point * s
+        }
+        for i in pendingPolygon.indices.dropLast() {
+            Self.layout(pending[pendingPolygon.count + i], from: pendingPolygon[i], to: pendingPolygon[i + 1], scale: s)
+        }
+    }
+
+    private func applyHighlight() {
+        for (id, layer) in measureEntities {
+            Self.paint(layer, selection == .measurement(id) ? Self.selectedMaterial : Self.measureMaterial)
+        }
+        for (id, layer) in voidEntities {
+            Self.paint(layer, selection == .void(id) ? Self.selectedMaterial : Self.voidMaterial)
+        }
+    }
+
+    private static func paint(_ layer: Entity, _ material: UnlitMaterial) {
+        for case let part as ModelEntity in layer.children {
+            part.model?.materials = [material]
+        }
+    }
+
+    // Labels keep their size within 1.5 m of the user and grow linearly beyond it, like corner
+    // balls, so a distance reads from across a site.
+    func updateMarkSizes() {
+        guard let pose = devicePose() else { return }
+        let eye = Self.translation(pose)
+        for layer in measureEntities.values {
+            guard let label = layer.findEntity(named: "label") else { continue }
+            label.scale = SIMD3<Float>(repeating: max(1, simd_distance(label.position(relativeTo: nil), eye) / 1.5))
         }
     }
 
@@ -499,28 +673,28 @@ final class SceneController {
 
     // MARK: Tools panel
 
-    // Lazy follow: the panel stays put while it is roughly in front of the user and only eases
-    // back once it has drifted out of view or reach, avoiding head-locked UI.
+    // The panel sits at `panelOffset` in the wearer's yaw frame (default: 0.6 m ahead, 0.3 m below
+    // the eyes); dragging the grab bar rewrites the offset for the session. Lazy follow: the panel
+    // stays put while it is roughly where the wearer left it and only eases back once it has
+    // drifted out of view or reach, avoiding head-locked UI.
     func resetPanel() {
         panelPlaced = false
         panelMoving = false
+        panelOffset = Self.defaultPanelOffset
     }
 
-    func updatePanel(_ panel: Entity, deltaTime: Float, follow: Bool) {
+    func updatePanel(deltaTime: Float, follow: Bool) {
         guard let pose = devicePose() else {
-            if !panelPlaced { panel.position = [0, 1.1, -0.6] }
+            if !panelPlaced { panelRoot.position = [0, 1.1, -0.6] }
             return
         }
-        let eye = SIMD3<Float>(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
-        var forward = -SIMD3<Float>(pose.columns.2.x, pose.columns.2.y, pose.columns.2.z)
-        forward.y = 0
-        forward = simd_length(forward) > 0.001 ? simd_normalize(forward) : [0, 0, -1]
-        let target = eye + forward * 0.6 + [0, -0.3, 0]
-        let facing = simd_quatf(angle: atan2(forward.x, forward.z) + .pi, axis: [0, 1, 0])
+        let eye = Self.translation(pose)
+        let target = eye + Self.yawRotation(pose).act(panelOffset)
+        let facing = Self.facing(from: eye, to: target)
 
         guard panelPlaced else {
-            panel.position = target
-            panel.orientation = facing
+            panelRoot.position = target
+            panelRoot.orientation = facing
             panelPlaced = true
             return
         }
@@ -528,16 +702,44 @@ final class SceneController {
             panelMoving = false
             return
         }
-        var toPanel = panel.position - eye
+        var toPanel = panelRoot.position - eye
+        var toTarget = target - eye
         toPanel.y = 0
-        let angle = simd_length(toPanel) > 0.001 ? acos(min(max(simd_dot(simd_normalize(toPanel), forward), -1), 1)) : 0
-        let distance = simd_distance(panel.position, target)
+        toTarget.y = 0
+        let angle = simd_length(toPanel) > 0.001 && simd_length(toTarget) > 0.001
+            ? acos(min(max(simd_dot(simd_normalize(toPanel), simd_normalize(toTarget)), -1), 1)) : 0
+        let distance = simd_distance(panelRoot.position, target)
         if !panelMoving, angle > 35 * .pi / 180 || distance > 0.5 { panelMoving = true }
         guard panelMoving else { return }
         let t = 1 - exp(-deltaTime / 0.4)
-        panel.position = simd_mix(panel.position, target, SIMD3<Float>(repeating: t))
-        panel.orientation = simd_slerp(panel.orientation, facing, t)
+        panelRoot.position = simd_mix(panelRoot.position, target, SIMD3<Float>(repeating: t))
+        panelRoot.orientation = simd_slerp(panelRoot.orientation, facing, t)
         if distance < 0.02 { panelMoving = false }
+    }
+
+    func dragPanel(to position: SIMD3<Float>) {
+        panelRoot.position = position
+        panelMoving = false
+        guard let pose = devicePose() else { return }
+        let eye = Self.translation(pose)
+        panelOffset = Self.yawRotation(pose).inverse.act(position - eye)
+        panelRoot.orientation = Self.facing(from: eye, to: position)
+    }
+
+    /// Rotation about Y taking the wearer's frame (−Z ahead) to their heading.
+    private static func yawRotation(_ pose: simd_float4x4) -> simd_quatf {
+        var forward = -SIMD3<Float>(pose.columns.2.x, pose.columns.2.y, pose.columns.2.z)
+        forward.y = 0
+        forward = simd_length(forward) > 0.001 ? simd_normalize(forward) : [0, 0, -1]
+        return simd_quatf(angle: atan2(forward.x, forward.z) + .pi, axis: [0, 1, 0])
+    }
+
+    /// Orientation of an attachment at `position` that faces the wearer at `eye`.
+    private static func facing(from eye: SIMD3<Float>, to position: SIMD3<Float>) -> simd_quatf {
+        var direction = position - eye
+        direction.y = 0
+        direction = simd_length(direction) > 0.001 ? simd_normalize(direction) : [0, 0, -1]
+        return simd_quatf(angle: atan2(direction.x, direction.z) + .pi, axis: [0, 1, 0])
     }
 
     func setMode(_ mode: PlacementMode) {
@@ -689,12 +891,14 @@ final class SceneController {
         root.scale = SIMD3<Float>(repeating: placement.scale)
         handle.scale = SIMD3<Float>(repeating: 1 / placement.scale)
         pivotMarker.scale = SIMD3<Float>(repeating: 1 / placement.scale)
-        applyMeasureScale()
+        applyMarkScale()
         updateCornerBallSize()
-        // Measurements are only taken and shown at real size.
-        measureRoot.isEnabled = atRealSize
-        if !atRealSize, selectedMeasurement != nil { selectedMeasurement = nil }
-        updateMeasuring()
+        // Measurements and voids are only taken and shown at real size.
+        marksRoot.isEnabled = atRealSize
+        if !atRealSize {
+            if selection != nil { selection = nil }
+            if toolActive { setTool(.none) }
+        }
     }
 
     private static func normalized(_ yaw: Float) -> Float {

@@ -31,12 +31,14 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 2. **Project** — tap a project to open it in the room (the mixed immersive space). It downloads
    and loads every level, then listens for `scene.updated`. The window stays open; *Hide model*
    in its Placement section closes the model.
-3. **Tools panel** — a small panel floats a little below eye level with just two tools:
-   *Bring window here* and *Measure* (with a one-line hint underneath). Placement, scan mesh and
-   the other settings live in the window. *Bring window here* closes the window and reopens it
-   in front of you; that resets the window to its first tab, scrolled to the top. When you turn away
-   or walk off, the panel glides back in front of you; turn off *Tools panel follows me* in the
-   window to leave it where it is. The model starts as a tabletop
+3. **Tools panel** — a single row of icons floats a little below eye level: *Bring window here*,
+   *Measure*, *Void*, and a trash icon that deletes the selected measurement or void. Placement,
+   scan mesh and the other settings live in the window. A thin white bar sits under the panel;
+   pinch and drag it to put the panel wherever you like. It then keeps that spot relative to you:
+   with *Tools panel follows me* on, it glides back to that same spot when you turn or walk away
+   (turn the toggle off in the window to leave it exactly where it is). The spot is forgotten when
+   the model is closed. *Bring window here* closes the window and reopens it in front of you; that
+   resets the window to its first tab, scrolled to the top. The model starts as a tabletop
    (1:50) in front of you; the small blue sphere is a grab handle that stays the same size at any
    scale.
 4. **Placement** — three modes, chosen with the *Basic / Precise / Corners* switch (remembered
@@ -94,17 +96,26 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    hidden. The holes move with the model when you drag or re-pin it (they settle when the gesture
    ends), the saved scan itself is untouched, and *Show scan mesh* draws the wireframe with the
    holes cut out. Void edges are as fine as the scan's triangles, roughly 5–15 cm.
+   Voids can also be marked from the headset at 1:1 with the *Void* icon in the tools panel. It
+   has two modes, chosen with the two icons that appear next to it: *surface* — look at any piece
+   of the model (a pool shell, a ramp slab) and pinch; its outline seen from above becomes a hole
+   in the scan, exactly as if it had been marked *Toggle Void* in Revit; *polygon* — pinch three
+   or more spots on the model to trace the outline yourself, then press the checkmark (switching
+   modes or turning the tool off drops an unfinished polygon). Voids you make here are drawn as a
+   blue outline at 1:1, saved per project, and move with the model; look at the outline and pinch
+   to select it (it turns white), then press the trash icon to remove it and close the hole. Voids
+   that came from Revit are not drawn and can only be removed in Revit.
 6. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
-   *Scale* switch (at 1:20, 1:50, 1:100 or any other scale the *Measure* toggle is greyed out and
-   the panel says *Switch to 1:1 Real size to measure*). *Measure* in the tools panel is on
-   whenever the room opens and at every return to 1:1; the model's hit shapes are built as each
-   level loads, so it is ready at once. While it is on, pinching doesn't move the model — turn it
-   off to move or align the model. Look at a spot on the model and pinch to drop a yellow dot, then look
-   at a second spot and pinch again: a yellow line appears between them, labelled with the
-   distance in feet and inches (nearest ¼"). Tap a label, then the trash button next to it, to
-   delete that measurement. Measurements are saved per project and move with the model. They
-   are hidden whenever the model is not at 1:1 and come back when you return to it; leaving 1:1
-   while measuring turns *Measure* off and drops a half-finished measurement. Measuring works
+   *Scale* switch (at 1:20, 1:50, 1:100 or any other scale the ruler icon in the tools panel is
+   greyed out). Tap the ruler to turn measuring on; while it is on, pinching doesn't move the
+   model. Look at a spot on the model and pinch to drop a yellow dot, then look at a second spot
+   and pinch again: a yellow line appears between them, labelled with the distance in feet and
+   inches (nearest ¼"). Labels grow with distance so the numbers stay readable from across a
+   site. To delete a measurement, look at its yellow line and pinch to select it (it turns white),
+   then press the trash icon in the panel — or tap its label, then the trash button next to it.
+   Measurements are saved per project and move with the model. They are hidden whenever the
+   model is not at 1:1 and come back when you return to it; leaving 1:1 turns the tool off, hides
+   measurements and voids, and drops a half-finished measurement or polygon. Measuring works
    while the position is locked.
 7. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
@@ -124,14 +135,15 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/ModelLibrary.swift` | On-device library: saved manifests + the assets they reference |
 | `RevitSync/ServerBrowser.swift` | Bonjour discovery of `_revitsync._tcp` |
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
-| `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor, corner balls |
+| `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor, corner balls, tool state, measurement and void marks, selection, the tools panel's grab bar |
 | `RevitSync/Footprint.swift` | Plan-outline corner detection, the two-corner alignment solve, and `Void` volumes (plain Swift) |
 | `RevitSync/ScanMesh.swift` | Scene-reconstruction mesh as invisible occluders plus the wireframe, cut around the model's voids; freezes chunks the headset drops into grid cells placed by the nearest scan pin |
 | `RevitSync/ScanGrid.swift` | 1 m scan-frame cells: triangle binning, per-cell merge (plain Swift) |
 | `RevitSync/ScanStore.swift` | On-device scan store: `Application Support/scans/<project>/anchors.json` + `cells/*.cell` |
-| `RevitSync/ImmersiveView.swift` | Mixed immersive space, gestures, the tools-panel and measurement-label attachments |
-| `RevitSync/ToolsPanel.swift` | Following tools panel (Bring window here, Measure), the window's placement controls, measurement labels |
+| `RevitSync/ImmersiveView.swift` | Mixed immersive space, gestures (model, grab bar, tool taps, mark selection), the tools-panel and measurement-label attachments |
+| `RevitSync/ToolsPanel.swift` | Floating icon-row tools panel (Bring window here, Measure, Void, Delete), the window's placement controls, measurement labels |
 | `RevitSync/Measurements.swift` | Measurement model, feet-and-inches formatting, per-project storage |
+| `RevitSync/Voids.swift` | Void marks drawn on the headset, per-project storage (plain Swift) |
 | `RevitSync/ContentView.swift` | The control window |
 
 Models are loaded with `Entity(contentsOf:)` off the main actor; files live under

@@ -69,7 +69,7 @@ final class AppModel {
         didSet { UserDefaults.standard.set(followMe, forKey: "followMe") }
     }
 
-    let scene = SceneController()
+    let scene = SceneController(legacyProject: UserDefaults.standard.string(forKey: "selectedProject"))
 
     private var client: SyncClient?
     private var eventTask: Task<Void, Never>?

@@ -53,6 +53,40 @@ enum Footprint {
         }
     }
 
+    /// Corners come from the ground floor alone: a basement or footing that reaches past the walls
+    /// would otherwise move them. Walls are long vertical triangles with no vertex mid-height, so the
+    /// floor is read as the plan section 1 m above level 0, where triangles cross that plane.
+    static let groundSectionHeight: Float = 1
+
+    /// Two models are taken as the same house when every footprint corner is within a foot in plan.
+    static let sameHouseTolerance: Float = 0.3048
+
+    /// Points where the triangles cross `y = groundSectionHeight`, dropped to level 0 (y = 0).
+    static func groundSection(positions: [SIMD3<Float>], indices: [UInt32]) -> [SIMD3<Float>] {
+        let h = groundSectionHeight
+        var points: [SIMD3<Float>] = []
+        for t in stride(from: 0, to: indices.count - 2, by: 3) {
+            let tri = [positions[Int(indices[t])], positions[Int(indices[t + 1])], positions[Int(indices[t + 2])]]
+            for i in 0..<3 {
+                let p = tri[i], q = tri[(i + 1) % 3]
+                if p.y == h {
+                    points.append(SIMD3(p.x, 0, p.z))
+                } else if (p.y - h) * (q.y - h) < 0 {
+                    let f = (h - p.y) / (q.y - p.y)
+                    points.append(SIMD3(p.x + (q.x - p.x) * f, 0, p.z + (q.z - p.z) * f))
+                }
+            }
+        }
+        return points
+    }
+
+    static func sameHouse(_ a: [SIMD3<Float>], _ b: [SIMD3<Float>]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy { p, q in
+            let dx = p.x - q.x, dz = p.z - q.z
+            return (dx * dx + dz * dz).squareRoot() <= sameHouseTolerance
+        }
+    }
+
     /// The four hull vertices enclosing the largest area, ordered NW, NE, SE, SW (project north is −Z).
     /// nil when the plan outline has fewer than four hull vertices.
     static func corners(of points: [SIMD3<Float>]) -> [SIMD3<Float>]? {

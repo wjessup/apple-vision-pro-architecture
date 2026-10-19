@@ -31,6 +31,8 @@ namespace RevitSync
         private PartitionWriter _current;
         private MaterialInfo _currentMaterial;
         private Dictionary<MaterialInfo, MeshBuffer> _elementMeshes;
+        private bool _currentIsVoid;
+        private static readonly MaterialInfo VoidKey = new MaterialInfo();
 
         public UsdaExportContext(Document doc, string outputDir)
         {
@@ -75,6 +77,8 @@ namespace RevitSync
             if (element == null) return RenderNodeAction.Skip;
             _current = PartitionFor(element);
             _elementMeshes = new Dictionary<MaterialInfo, MeshBuffer>();
+            var voidParam = element.LookupParameter(VoidCommand.ParameterName);
+            _currentIsVoid = voidParam != null && voidParam.StorageType == StorageType.Integer && voidParam.AsInteger() == 1;
             return RenderNodeAction.Proceed;
         }
 
@@ -84,7 +88,10 @@ namespace RevitSync
             foreach (var pair in _elementMeshes)
             {
                 if (pair.Value.FaceCount == 0) continue;
-                _current.WriteMesh($"e{elementId.Value()}_{_current.MeshCount}", pair.Value, pair.Key);
+                if (_currentIsVoid)
+                    _current.WriteVoidMesh($"void_e{elementId.Value()}", pair.Value);
+                else
+                    _current.WriteMesh($"e{elementId.Value()}_{_current.MeshCount}", pair.Value, pair.Key);
             }
             _elementMeshes = null;
         }
@@ -132,10 +139,11 @@ namespace RevitSync
         public void OnPolymesh(PolymeshTopology node)
         {
             if (_elementMeshes == null) return;
-            if (!_elementMeshes.TryGetValue(_currentMaterial, out var buffer))
+            var key = _currentIsVoid ? VoidKey : _currentMaterial;
+            if (!_elementMeshes.TryGetValue(key, out var buffer))
             {
                 buffer = new MeshBuffer();
-                _elementMeshes[_currentMaterial] = buffer;
+                _elementMeshes[key] = buffer;
             }
 
             var transform = _transforms.Peek();
@@ -306,6 +314,23 @@ namespace RevitSync
             w.WriteLine("    )");
             w.WriteLine("    {");
             w.WriteLine($"        rel material:binding = </Model/Materials/{material.PrimName}>");
+            WriteGeometry(mesh);
+        }
+
+        public void WriteVoidMesh(string name, MeshBuffer mesh)
+        {
+            MeshCount++;
+
+            var w = _writer;
+            w.WriteLine($"    def Mesh \"{name}\"");
+            w.WriteLine("    {");
+            w.WriteLine("        uniform token visibility = \"invisible\"");
+            WriteGeometry(mesh);
+        }
+
+        private void WriteGeometry(MeshBuffer mesh)
+        {
+            var w = _writer;
             w.WriteLine("        uniform token subdivisionScheme = \"none\"");
             w.WriteLine("        int[] faceVertexCounts = [" + string.Join(", ", Enumerable.Repeat("3", mesh.FaceCount)) + "]");
             w.WriteLine("        int[] faceVertexIndices = [" + string.Join(", ", mesh.Indices) + "]");

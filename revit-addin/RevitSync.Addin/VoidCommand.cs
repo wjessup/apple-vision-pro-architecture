@@ -82,7 +82,6 @@ namespace RevitSync
             }
             foreach (var category in selected.Select(e => e.Category).Where(c => c != null && c.AllowsBoundParameters))
             {
-                if (bound != null && bound.Contains(category)) continue;
                 if (set.Insert(category)) grew = true;
             }
 

@@ -119,4 +119,28 @@ enum Footprint {
         let q = p * scale
         return position + SIMD3(q.x * c + q.z * s, q.y, -q.x * s + q.z * c)
     }
+
+    /// A model volume (pool, car ramp) inside which scanned real surfaces must not occlude.
+    /// Nested so it doesn't shadow `Swift.Void` across the module.
+    struct Void {
+        var outline: [SIMD3<Float>]
+        var top: Float
+
+        /// The 0.1 m above `top` is ARKit's vertical placement error for a flat scanned surface: a pool whose
+        /// coping sits exactly at grade would otherwise keep about half of the lawn triangles over it. There is
+        /// no lower bound because nothing real is scanned beneath a pool floor or a ramp surface.
+        func contains(_ p: SIMD3<Float>) -> Bool {
+            guard p.y <= top + 0.1 else { return false }
+            var inside = false
+            var j = outline.count - 1
+            for i in outline.indices {
+                let a = outline[i], b = outline[j]
+                if (a.z > p.z) != (b.z > p.z), p.x < (b.x - a.x) * (p.z - a.z) / (b.z - a.z) + a.x {
+                    inside.toggle()
+                }
+                j = i
+            }
+            return inside
+        }
+    }
 }

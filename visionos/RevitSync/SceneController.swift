@@ -3,6 +3,7 @@ import Foundation
 import QuartzCore
 import RealityKit
 import simd
+import UIKit
 
 struct Placement: Codable, Equatable {
     var position: SIMD3<Float>

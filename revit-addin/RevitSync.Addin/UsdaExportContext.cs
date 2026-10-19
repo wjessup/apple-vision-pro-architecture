@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Architecture;
 
 namespace RevitSync
 {
@@ -79,8 +80,43 @@ namespace RevitSync
             _elementMeshes = new Dictionary<MaterialInfo, MeshBuffer>();
             var voidParam = element.LookupParameter(VoidCommand.ParameterName);
             _currentIsVoid = voidParam != null && voidParam.StorageType == StorageType.Integer && voidParam.AsInteger() == 1;
+            if (element is Stairs stairs) WriteStairMarkers(stairs, elementId);
             return RenderNodeAction.Proceed;
         }
+
+        private const double StairMarkerOffsetFeet = 0.4 / FeetToMetres;
+
+        /// Stair paths are projected onto the stairs' base level, so only their XY is used; the
+        /// heights come from the stairs' own elevations.
+        private void WriteStairMarkers(Stairs stairs, ElementId elementId)
+        {
+            var runs = stairs.GetStairsRuns()
+                .Select(id => stairs.Document.GetElement(id) as StairsRun)
+                .Where(r => r != null)
+                .OrderBy(r => r.BaseElevation)
+                .ToList();
+            if (runs.Count == 0) return;
+            var first = runs[0].GetStairsPath().FirstOrDefault();
+            var last = runs[runs.Count - 1].GetStairsPath().LastOrDefault();
+            if (first == null || last == null) return;
+
+            var start = first.ComputeDerivatives(0, true);
+            var end = last.ComputeDerivatives(1, true);
+            var bottom = start.Origin - Flat(start.BasisX) * StairMarkerOffsetFeet;
+            var top = end.Origin + Flat(end.BasisX) * StairMarkerOffsetFeet;
+            var id = elementId.Value();
+            _current.WriteMarker($"stair_e{id}_bottom", Marker(bottom, stairs.BaseElevation));
+            _current.WriteMarker($"stair_e{id}_top", Marker(top, stairs.BaseElevation + stairs.Height));
+        }
+
+        private static XYZ Flat(XYZ v)
+        {
+            var flat = new XYZ(v.X, v.Y, 0);
+            return flat.GetLength() > 1e-9 ? flat.Normalize() : XYZ.Zero;
+        }
+
+        private XYZ Marker(XYZ plan, double elevation) =>
+            ToUsd(_transforms.Peek().OfPoint(new XYZ(plan.X, plan.Y, elevation)) - _basePoint);
 
         public void OnElementEnd(ElementId elementId)
         {
@@ -326,6 +362,16 @@ namespace RevitSync
             w.WriteLine("    {");
             w.WriteLine("        token visibility = \"invisible\"");
             WriteGeometry(mesh);
+        }
+
+        public void WriteMarker(string name, XYZ position)
+        {
+            var w = _writer;
+            w.WriteLine($"    def Xform \"{name}\"");
+            w.WriteLine("    {");
+            w.WriteLine($"        double3 xformOp:translate = ({position.X.ToString("0.#####", Inv)}, {position.Y.ToString("0.#####", Inv)}, {position.Z.ToString("0.#####", Inv)})");
+            w.WriteLine("        uniform token[] xformOpOrder = [\"xformOp:translate\"]");
+            w.WriteLine("    }");
         }
 
         private void WriteGeometry(MeshBuffer mesh)

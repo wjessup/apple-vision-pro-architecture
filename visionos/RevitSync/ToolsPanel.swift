@@ -15,6 +15,11 @@ struct ToolsPanel: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let warning = scene.lockWarning {
+                Label(warning, systemImage: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         }
         .padding(16)
         .frame(width: 260)
@@ -99,6 +104,11 @@ struct PlacementControls: View {
         Text(placementCaption)
             .font(.caption)
             .foregroundStyle(.secondary)
+        if let warning = scene.lockWarning {
+            Label(warning, systemImage: "lock.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
         DisclosureGroup("Advanced") {
             Toggle("Allow free scaling", isOn: Binding(
                 get: { !scene.scaleLocked },
@@ -144,6 +154,7 @@ struct PlacementControls: View {
                 ? "Pinch and drag the blue handle or the model to move it. Pinch with both hands to rotate. Size stays at the scale above." + sizeHint
                 : "Pinch and drag the blue handle or the model to move it. Pinch with both hands to scale or rotate."
         case .precise:
+            if scene.cornerLocked { return "A corner is locked, so only the height (Y) can change. Switch to Corners and tap the lock to unlock it." }
             return scene.scaleLocked
                 ? "Drag the blue handle to move the base point, or nudge it with the X/Y/Z sliders. Use the slider to rotate around it." + sizeHint
                 : "Drag the blue handle to move the base point, or nudge it with the X/Y/Z sliders. Use the sliders to scale and rotate around it."
@@ -189,6 +200,7 @@ struct PlacementControls: View {
                 }
             }
         }
+        .disabled(scene.cornerLocked)
         VStack(alignment: .leading) {
             Text("Rotation \(String(format: "%.1f", scene.placement.yaw * 180 / .pi))°")
             Slider(
@@ -204,8 +216,10 @@ struct PlacementControls: View {
                 stepButton("+1°") { rotate(by: 1) }
             }
         }
+        .disabled(scene.cornerLocked)
         ForEach(0..<3, id: \.self) { axis in
             translationControl(axis: axis)
+                .disabled(scene.cornerLocked && axis != 1)
         }
     }
 

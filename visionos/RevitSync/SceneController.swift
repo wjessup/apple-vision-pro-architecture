@@ -93,6 +93,27 @@ final class SceneController {
         return material
     }
 
+    private static func lockIcon() -> Entity {
+        let material = cornerMaterial(.white, opacity: 1)
+        let icon = Entity()
+        icon.name = "lock"
+        icon.position = [0, 0.065, 0]
+        icon.components.set(BillboardComponent())
+        let parts: [(size: SIMD3<Float>, at: SIMD3<Float>)] = [
+            ([0.04, 0.032, 0.012], [0, 0, 0]),
+            ([0.006, 0.02, 0.006], [-0.013, 0.026, 0]),
+            ([0.006, 0.02, 0.006], [0.013, 0.026, 0]),
+            ([0.032, 0.006, 0.006], [0, 0.036, 0]),
+        ]
+        for part in parts {
+            let box = ModelEntity(mesh: .generateBox(size: part.size), materials: [material])
+            box.position = part.at
+            icon.addChild(box)
+        }
+        icon.isEnabled = false
+        return icon
+    }
+
     private(set) var measuring = false
     private(set) var preparingMeasure = false
     private(set) var measurements: [Measurement] = []
@@ -138,10 +159,11 @@ final class SceneController {
                 materials: [SceneController.cornerMaterial(.white, opacity: 1)])
             text.position.x = -text.visualBounds(relativeTo: text).center.x
             let label = Entity()
-            label.position = [0, 0.06, 0]
+            label.position = [0, 0.13, 0]
             label.components.set(BillboardComponent())
             label.addChild(text)
             ball.addChild(label)
+            ball.addChild(SceneController.lockIcon())
             ball.isEnabled = false
             return ball
         }
@@ -464,10 +486,6 @@ final class SceneController {
     func setMode(_ mode: PlacementMode) {
         self.mode = mode
         pivotMarker.isEnabled = mode == .precise
-        if mode != .corners, placement.lockedCorners != nil {
-            placement.lockedCorners = nil
-            commitPlacement()
-        }
         refreshCollision()
         refreshCornerBalls()
     }
@@ -475,6 +493,20 @@ final class SceneController {
     // MARK: Corners
 
     var lockedCorners: [Int] { placement.lockedCorners ?? [] }
+
+    /// A locked corner pins the model; only vertical moves and swinging a free corner around it are allowed.
+    var cornerLocked: Bool { !lockedCorners.isEmpty }
+    private(set) var lockWarning: String?
+    private var warningTask: Task<Void, Never>?
+
+    func warnCornerLocked() {
+        lockWarning = "A corner is locked. Tap its lock to unlock it before moving the model."
+        warningTask?.cancel()
+        warningTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled { lockWarning = nil }
+        }
+    }
 
     func cornerState(_ index: Int) -> CornerState {
         let locked = lockedCorners
@@ -532,6 +564,7 @@ final class SceneController {
             case .unavailable: Self.unavailableCornerMaterial
             }
             ball.model?.materials = [material]
+            ball.findEntity(named: "lock")?.isEnabled = cornerState(index) == .locked
         }
     }
 

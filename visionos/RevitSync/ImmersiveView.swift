@@ -88,9 +88,11 @@ struct ImmersiveView: View {
                 guard !model.locked, !scene.measuring else { return }
                 if dragStart == nil {
                     if let corner = scene.cornerIndex(of: value.entity), let start = scene.cornerWorld(corner) {
+                        guard scene.cornerState(corner) == .free else { return scene.warnCornerLocked() }
                         draggedCorner = corner
                         dragStart = start
                     } else if isDescendant(value.entity, of: scene.root), !isDescendant(value.entity, of: scene.measureRoot) {
+                        guard !scene.cornerLocked else { return scene.warnCornerLocked() }
                         dragStart = scene.root.position(relativeTo: nil)
                     } else {
                         return
@@ -126,6 +128,7 @@ struct ImmersiveView: View {
             .targetedToEntity(scene.root)
             .onChanged { value in
                 guard !model.locked, !scene.measuring, model.placementMode == .basic, !scene.scaleLocked else { return }
+                guard !scene.cornerLocked else { return scene.warnCornerLocked() }
                 if scaleStart == nil {
                     scaleStart = scene.placement.scale
                     scene.isGesturing = true
@@ -144,6 +147,7 @@ struct ImmersiveView: View {
             .targetedToEntity(scene.root)
             .onChanged { value in
                 guard !model.locked, !scene.measuring, model.placementMode == .basic else { return }
+                guard !scene.cornerLocked else { return scene.warnCornerLocked() }
                 if yawStart == nil {
                     yawStart = scene.placement.yaw
                     scene.isGesturing = true

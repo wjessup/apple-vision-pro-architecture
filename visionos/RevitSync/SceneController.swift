@@ -1050,7 +1050,9 @@ final class SceneController {
     /// `scanFromModel`; once located, a model never placed in the scan frame gets recorded in it.
     private func syncScanFrame() {
         guard scanMesh.isAligned else { return }
-        if isSearching {
+        if atRealSize, let pending = pendingSharedPlacement {
+            adoptSharedPlacement(scanFromModel: pending)
+        } else if isSearching {
             guard let scanFromModel = placement.scanFromModel.map(ScanMesh.matrix),
                   let originFromScan = scanMesh.originFromScan(nearScan: Self.translation(scanFromModel)) else { return }
             let m = originFromScan * scanFromModel
@@ -1059,8 +1061,6 @@ final class SceneController {
             applyPlacement()
             pushVoids()
             found(via: .scan)
-        } else if atRealSize, let pending = pendingSharedPlacement {
-            adoptSharedPlacement(scanFromModel: pending)
         } else {
             recordScanFrame()
         }
@@ -1301,14 +1301,14 @@ final class SceneController {
             pendingSharedPlacement = scanFromModel
             return
         }
-        pendingSharedPlacement = nil
-        placement.scanFromModel = ScanMesh.columns(scanFromModel)
         guard let originFromScan = scanMesh.originFromScan(nearScan: Self.translation(scanFromModel)) else {
-            // While searching, `syncScanFrame` restores the house from the saved record once pins track.
-            if !isSearching { pendingSharedPlacement = scanFromModel }
-            placement.save()
+            // Kept until `syncScanFrame` sees the scan aligned; it then wins over the house's own
+            // saved anchor, which still marks where this headset last put it.
+            pendingSharedPlacement = scanFromModel
             return
         }
+        pendingSharedPlacement = nil
+        placement.scanFromModel = ScanMesh.columns(scanFromModel)
         let m = originFromScan * scanFromModel
         placement.position = Self.translation(m)
         placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))

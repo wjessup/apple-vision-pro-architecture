@@ -306,6 +306,12 @@ final class SiteSharing: PeerLinkDelegate {
             return
         }
         outdated.remove(hello.deviceID)
+        // A connection the other side gave up on can linger until keepalive notices; the newest wins.
+        for (other, connection) in connections where other != id && connection.deviceID == hello.deviceID {
+            connections[other] = nil
+            headTags.removeValue(forKey: other)?.entity.removeFromParent()
+            link.close(other)
+        }
         connections[id]?.hello = hello
         connections[id]?.remaining = 0
 

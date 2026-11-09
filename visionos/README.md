@@ -122,8 +122,8 @@ headsets). The *Group Activities* capability (`com.apple.developer.group-session
      update* (its app is older or newer than this one), *Not nearby, last seen …*, or *Connection
      failed, retrying*.
    - Network problems, such as Local Network permission refused or Wi-Fi off.
-   - *Line up exactly with SharePlay* — with the headsets in a nearby SharePlay session (FaceTime),
-     drops a shared world anchor that both headsets see at the same real spot; this lines them up
+   - *Line up exactly with SharePlay* — opens the share menu; once the other wearer joins the
+     nearby SharePlay session, one headset drops a shared world anchor that both headsets see at the same real spot; this lines them up
      at once instead of waiting for the scans to match.
 
    Headsets that meet first line up roughly from the house placement (the same house sits on the
@@ -170,9 +170,10 @@ headsets). The *Group Activities* capability (`com.apple.developer.group-session
 6. On the joining headset, walk up to walls facing two different ways. Its alignment line changes
    to *Lined up by height only…*, then *Lined up by scan*, and the name tag over the other wearer
    turns from amber to green.
-7. Start a FaceTime call between the two (SharePlay nearby) and press *Line up exactly with
-   SharePlay* on one: it should say *Lined up by SharePlay anchor* (or stay *Lined up by scan*),
-   with the name tags sitting right over the other wearer's head.
+7. Press *Line up exactly with SharePlay* on one headset, pick the other wearer under *Share
+   Nearby*, and have them tap *Join* (each must be in the other's contacts, with *Allow Nearby
+   People* on in Settings → General → Window Sharing). The headset that joined later should say
+   *Lined up by SharePlay anchor*, with the name tags sitting right over the other wearer's head.
 8. Walk out of range: the row turns *Not nearby, last seen …*. Walk back: it reconnects and
    syncs only what changed.
 9. *Clear scan* on one headset: its scan disappears from the other too (real objects it scanned

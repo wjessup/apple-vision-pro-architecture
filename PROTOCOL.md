@@ -134,11 +134,12 @@ Matrices are column-major 4×4 as 16 floats. Dates are property-list dates.
 
 After both `hello`s, each side sends, in order:
 
-1. `tombstones` it holds that the peer did not list;
+1. `tombstones`, every one it holds;
 2. every `origin` record it holds (its own and relayed ones);
 3. the newest site `placement`, when it holds one for the peer's site;
 4. `catchUp(count)`, then the cells: for every scan, the cells with a revision above the peer's
-   `have` for that scan (all of them when the peer has none), in **ascending revision** order.
+   `have` for that scan (all of them when the peer has none), in **ascending revision** order,
+   skipping the peer's own scan and scans the peer listed as tombstoned.
 
 Cell revisions are unique and increasing per scan and owned by the scan's headset. Sending a
 scan's cells oldest first means a receiver cut off part-way holds a prefix of that scan's history,
@@ -187,4 +188,4 @@ one.
 
 **Clear scan** on a headset sends a tombstone for its scan id: every headset deletes its copies,
 will not take them back from anyone, and passes the tombstone on. The headset itself starts a new
-scan with a new id.
+scan with a new id in a new site, and joins the others again the next time it meets them.

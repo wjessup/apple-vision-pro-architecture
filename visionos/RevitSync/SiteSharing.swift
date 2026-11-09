@@ -183,7 +183,7 @@ final class SiteSharing: PeerLinkDelegate {
             }
             let dropped = connection.rejected > 0 ? " · \(connection.rejected) message\(connection.rejected == 1 ? "" : "s") dropped" : ""
             rows.append(PeerRow(id: id.uuidString, name: displayName(connection), status: status + dropped,
-                                connected: true, attention: device.map(outdated.contains) ?? false))
+                                connected: true, attention: device.map { outdated.contains($0) } ?? false))
         }
         let others = Set(known.keys).union(nearby).subtracting(listed)
         let sorted = others.sorted { (nearby.contains($0) ? 0 : 1, known[$0]?.name ?? "") < (nearby.contains($1) ? 0 : 1, known[$1]?.name ?? "") }

@@ -118,9 +118,7 @@ enum ScanStore {
     /// This headset's scan identity; a scan saved before sharing existed gets a fresh one, which
     /// starts its own site.
     static func loadIdentity() -> ScanIdentity {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .millisecondsSince1970
-        if let identity = (try? Data(contentsOf: identityFile)).flatMap({ try? decoder.decode(ScanIdentity.self, from: $0) }) {
+        if let identity = (try? Data(contentsOf: identityFile)).flatMap({ try? JSONDecoder().decode(ScanIdentity.self, from: $0) }) {
             return identity
         }
         let identity = ScanIdentity.fresh()
@@ -131,9 +129,7 @@ enum ScanStore {
     static func saveIdentity(_ identity: ScanIdentity) {
         let dir = directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .millisecondsSince1970
-        try? encoder.encode(identity).write(to: identityFile, options: .atomic)
+        try? JSONEncoder().encode(identity).write(to: identityFile, options: .atomic)
     }
 
     static func saveAnchors(_ anchors: [ScanAnchorRecord]) {

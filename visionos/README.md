@@ -21,6 +21,10 @@ Then in Xcode: select the **RevitSync** target → Signing & Capabilities → pi
 select it as the run destination and press Run. It also runs in the visionOS Simulator — networking
 to a server on the same Mac works there, but world anchors and hand gestures are limited.
 
+The app needs **visionOS 27** or later (shared world anchors and peer-to-peer sharing between
+headsets). The *Group Activities* capability (`com.apple.developer.group-session`) is declared in
+`project.yml`; XcodeGen writes it to `RevitSync/RevitSync.entitlements`.
+
 ## Using it
 
 1. **Server** — the PC running `revitsync` appears under *Server* via Bonjour; tap it. If it
@@ -105,7 +109,32 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    blue outline at 1:1, saved per project, and move with the model; look at the outline and pinch
    to select it (it turns white), then press the trash icon to remove it and close the hole. Voids
    that came from Revit are not drawn and can only be removed in Revit.
-6. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
+6. **Other headsets** — Vision Pros running the app near each other share their room scans and
+   the house position directly over peer-to-peer Wi-Fi: Wi-Fi must be on, but no router or
+   server is needed. The *Other headsets* section of the Projects tab, below *Real world*, shows:
+   - *Share with nearby headsets* — turns finding and talking to other headsets on or off.
+   - This headset's name, as the others see it over your head.
+   - How this headset is lined up with the others: *Started this site* (the others line up with
+     you), *Lined up by scan*, *Lined up by height only, position from house*, *Lined up by house
+     placement only*, *Lined up by SharePlay anchor*, *Not lined up yet*, or *Out of line by N cm*
+     when the scans disagree.
+   - One row per other headset: *Connecting…*, *Syncing N pieces*, *Up to date*, *Needs app
+     update* (its app is older or newer than this one), *Not nearby, last seen …*, or *Connection
+     failed, retrying*.
+   - Network problems, such as Local Network permission refused or Wi-Fi off.
+   - *Line up exactly with SharePlay* — with the headsets in a nearby SharePlay session (FaceTime),
+     drops a shared world anchor that both headsets see at the same real spot; this lines them up
+     at once instead of waiting for the scans to match.
+
+   Headsets that meet first line up roughly from the house placement (the same house sits on the
+   same real spot), then exactly once their scans overlap enough: walk near walls facing two
+   different ways. Placing the house at 1:1 on any headset moves it on all of them. Every
+   headset keeps a copy of the others' scans, so real objects one wearer scanned hide the model
+   for everyone, and passes them on to headsets it meets later. Each other wearer has a name tag
+   over their head: **green** when lined up by scan or SharePlay anchor, **amber** when lined up
+   by the house placement or height only, so the tag may be off by some centimetres. *Clear scan*
+   on one headset removes its scan from every headset.
+7. **Measure** — measuring works only at real size. Choose *1:1 Real size* in the window's
    *Scale* switch (at 1:20, 1:50, 1:100 or any other scale the ruler icon in the tools panel is
    greyed out). Tap the ruler to turn measuring on — the model's hit shapes are built as each
    level loads, so measuring is ready at once; while it is on, pinching doesn't move the
@@ -118,14 +147,36 @@ to a server on the same Mac works there, but world anchors and hand gestures are
    model is not at 1:1 and come back when you return to it; leaving 1:1 turns the tool off, hides
    measurements and voids, and drops a half-finished measurement or polygon. Measuring works
    while the position is locked.
-7. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
+8. **Updates** — with *Reload automatically* on, a push from Revit replaces only the changed
    levels, in place; your position and the pin are untouched. Turn it off while presenting and
    use *Load now* when ready.
-8. **Offline** — every project you have synced is saved on the headset. Without the server (Wi-Fi
+9. **Offline** — every project you have synced is saved on the headset. Without the server (Wi-Fi
    off, away from the office) the *Project* list still shows them, the last-viewed model loads at
    launch, and any saved project opens at its pinned placement. The server is only needed to
    download new projects and updates; rows marked *not downloaded* or showing a newer server
    revision sync once connected.
+
+## Trying two headsets on site
+
+1. On both headsets: Wi-Fi on (no network has to be joined), open the same project, and allow
+   Local Network when asked.
+2. Scan separately: each wearer walks part of the property with the model shown at 1:1.
+3. Meet within a few metres. In *Other headsets* each should list the other within a few seconds:
+   *Connecting…*, then *Syncing N pieces*, then *Up to date*.
+4. Check the alignment line: one headset says *Started this site*, the other *Lined up by house
+   placement only* (or *Not lined up yet* if the house was never placed on it).
+5. Place the house on one headset (drag it or *Place in front of me*, at 1:1). The house on the
+   other headset moves to the same real spot.
+6. On the joining headset, walk up to walls facing two different ways. Its alignment line changes
+   to *Lined up by height only…*, then *Lined up by scan*, and the name tag over the other wearer
+   turns from amber to green.
+7. Start a FaceTime call between the two (SharePlay nearby) and press *Line up exactly with
+   SharePlay* on one: it should say *Lined up by SharePlay anchor* (or stay *Lined up by scan*),
+   with the name tags sitting right over the other wearer's head.
+8. Walk out of range: the row turns *Not nearby, last seen …*. Walk back: it reconnects and
+   syncs only what changed.
+9. *Clear scan* on one headset: its scan disappears from the other too (real objects it scanned
+   stop hiding the model there), and it lines up again from scratch.
 
 ## Code map
 
@@ -135,6 +186,11 @@ to a server on the same Mac works there, but world anchors and hand gestures are
 | `RevitSync/SyncClient.swift` | HTTP + WebSocket client |
 | `RevitSync/ModelLibrary.swift` | On-device library: saved manifests + the assets they reference |
 | `RevitSync/ServerBrowser.swift` | Bonjour discovery of `_revitsync._tcp` |
+| `RevitSync/PeerProtocol.swift` | Headset-to-headset messages, sites, origin records, framing and validation (plain Swift; see `PROTOCOL.md`) |
+| `RevitSync/PeerStore.swift` | On-device copies of other headsets' scans, the site placement and tombstones (plain Swift) |
+| `RevitSync/PeerLink.swift` | Bonjour `_revitsync-peer._tcp` over peer-to-peer Wi-Fi, one framed TCP connection per nearby headset |
+| `RevitSync/SiteSharing.swift` | Sites, catch-up and live sync, lining up with other headsets, the *Other headsets* status and name tags |
+| `RevitSync/SharedAnchor.swift` | SharePlay session for *Line up exactly with SharePlay* (shared world anchors) |
 | `RevitSync/AppModel.swift` | Connection, project selection, revision diffing, auto/deferred reload |
 | `RevitSync/SceneController.swift` | RealityKit root entity, per-partition children, placement + world anchor, corner balls, tool state, measurement and void marks, selection, the tools panel's grab bar |
 | `RevitSync/Footprint.swift` | Plan-outline corner detection, the two-corner alignment solve, and `Void` volumes (plain Swift) |

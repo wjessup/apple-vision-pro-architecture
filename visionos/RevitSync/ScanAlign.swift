@@ -10,9 +10,15 @@ struct ScanAlignment: Equatable {
     /// Remembered points that found a live surface within the final radius after alignment.
     var inliers = 0
     var inlierFraction: Float = 0
+    /// The matched surfaces include walls facing at least two different ways, so heading and
+    /// horizontal position are pinned down, not just height. On a floor alone (or one long wall)
+    /// the damped solve only keeps the unconstrained axes near zero.
+    var horizontallyConstrained = false
 
     static let maxShift: Float = 0.5
     static let maxYaw: Float = 5 * .pi / 180
+    static let maxJoinShift: Float = 1.5
+    static let maxJoinYaw: Float = 10 * .pi / 180
 
     func apply(_ p: SIMD3<Float>) -> SIMD3<Float> {
         ScanAlign.rotated(p - pivot, by: yaw) + pivot + translation
@@ -22,6 +28,12 @@ struct ScanAlignment: Equatable {
     /// the difference is tracking drift rather than a real change on the property.
     var isDrift: Bool {
         inliers >= 200 && inlierFraction >= 0.6 && length3(translation) <= Self.maxShift && abs(yaw) <= Self.maxYaw
+    }
+
+    /// Another headset's scan matches this one's live scan from a rough start (the house placed by
+    /// hand), found with `ScanAlign.joinRadii`.
+    var isJoinMatch: Bool {
+        inliers >= 400 && inlierFraction >= 0.6 && length3(translation) <= Self.maxJoinShift && abs(yaw) <= Self.maxJoinYaw
     }
 
     /// Column-major 4×4 matrix, the packing `ScanAnchorRecord.scanFromAnchor` uses.
@@ -37,6 +49,13 @@ struct ScanAlignment: Equatable {
 enum ScanAlign {
     static let maxSamples = 1500
     static let radii: [Float] = [0.3, 0.25, 0.2, 0.15, 0.1, 0.1]
+    /// Wider search for lining up with another headset's scan from a hand-placed start.
+    static let joinRadii: [Float] = [1.0, 0.6, 0.4, 0.3, 0.2, 0.1, 0.1]
+    /// Normals with |y| below this are walls (and other steep surfaces).
+    static let wallNormalY: Float = 0.7
+    /// Smaller over larger eigenvalue of the horizontal wall-normal spread that counts as walls
+    /// facing two ways.
+    static let minWallSpread: Float = 0.15
     /// A remembered point counts as matched within this distance of a live surface's plane.
     static let inlierPlaneDistance: Float = 0.05
 
@@ -92,10 +111,10 @@ enum ScanAlign {
     }
 
     /// Finds the yaw and translation that move `source` (remembered points) onto `target` (live
-    /// surfaces). Correspondences start within 30 cm and tighten to 10 cm; the damped normal
-    /// equations keep any axis the overlap cannot constrain (floor-only: everything but height)
-    /// near zero instead of letting it slide.
-    static func register(source all: [SIMD3<Float>], target: Target) -> ScanAlignment {
+    /// surfaces). Correspondences start within `radii[0]` and tighten to the last radius; the
+    /// damped normal equations keep any axis the overlap cannot constrain (floor-only: everything
+    /// but height) near zero instead of letting it slide.
+    static func register(source all: [SIMD3<Float>], target: Target, radii: [Float] = ScanAlign.radii) -> ScanAlignment {
         let step = max(1, all.count / maxSamples)
         let source = stride(from: 0, to: all.count, by: step).map { all[$0] }
         guard !source.isEmpty, !target.isEmpty else { return ScanAlignment() }
@@ -128,11 +147,27 @@ enum ScanAlign {
         }
 
         let finalRadius = radii.last!
+        var spread = SIMD3<Float>.zero  // xx, xz, zz of wall normals at inliers
+        var walls = 0
         result.inliers = source.reduce(0) { total, p in
             let moved = result.apply(p)
             guard let i = target.nearest(to: moved, within: finalRadius),
                   abs(dot3(target.normals[i], moved - target.points[i])) <= inlierPlaneDistance else { return total }
+            let n = target.normals[i]
+            if abs(n.y) < wallNormalY {
+                let h = SIMD2(n.x, n.z) / (n.x * n.x + n.z * n.z).squareRoot()
+                spread += SIMD3(h.x * h.x, h.x * h.y, h.y * h.y)
+                walls += 1
+            }
             return total + 1
+        }
+        if walls > 0 {
+            // Eigenvalues of the 2×2 second moment of horizontal wall directions; opposite faces
+            // of one wall count as one direction.
+            let a = spread.x, b = spread.y, c = spread.z
+            let mean = (a + c) / 2
+            let gap = (((a - c) / 2) * ((a - c) / 2) + b * b).squareRoot()
+            result.horizontallyConstrained = mean - gap >= minWallSpread * (mean + gap)
         }
         // Scaled back to the full set so the count threshold does not depend on the sampling step.
         result.inliers *= step

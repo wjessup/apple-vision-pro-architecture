@@ -216,6 +216,52 @@ final class ScanMesh {
         recount()
     }
 
+    // MARK: Other headsets' scans (driven by SiteSharing)
+
+    /// How live chunks are matched against reference scans of other headsets in this site.
+    enum SiteMatchMode: Equatable {
+        /// From a rough start (house placed by hand): wide search, `ScanAlignment.isJoinMatch`.
+        case join
+        /// Already lined up: the drift search, `ScanAlignment.isDrift`.
+        case refine
+
+        var radii: [Float] { self == .join ? ScanAlign.joinRadii : ScanAlign.radii }
+    }
+
+    /// Gives each of this headset's cell writes its revision. Set by `SiteSharing`; writes get
+    /// revision 0 while unset.
+    var nextCellRevision: (() -> Int)?
+    /// Called after `writeCells` saved own cells, with every record it wrote, in write order.
+    var onCellsWritten: (([(key: CellKey, record: ScanCellRecord)]) -> Void)?
+
+    /// This headset's own cells, for sending to other headsets.
+    var ownCells: [CellKey: ScanCellRecord] { [:] }
+
+    /// Shows or replaces another headset's scan. `myScanFromPeerScan` maps that headset's scan
+    /// frame into this one's; nil keeps the scan loaded but hidden (another site, or not lined up
+    /// yet). Live chunks are matched against `reference` scans while `siteMatch` is set.
+    func setPeerScan(_ scanID: UUID, myScanFromPeerScan: simd_float4x4?, reference: Bool, cells: [PeerCell]) {}
+
+    /// Moves (or hides, with nil) a peer scan already set, without resending its cells.
+    func setPeerPlacement(_ scanID: UUID, myScanFromPeerScan: simd_float4x4?, reference: Bool) {}
+
+    /// Adds or replaces one cell of a peer scan already set.
+    func updatePeerCell(_ cell: PeerCell) {}
+
+    func removePeerScan(_ scanID: UUID) {}
+
+    func removeAllPeerScans() {}
+
+    /// Matching of live chunks against reference peer scans; nil turns it off.
+    var siteMatch: SiteMatchMode?
+
+    /// One match result. `correction` (in this headset's scan frame) moves the reference scans
+    /// from where they are drawn now to where they line up with the live scan, so the caller
+    /// applies `siteFromScan = siteFromScan * correction.inverse`. Called for every finished
+    /// match, accepted or not; results computed against a placement that changed meanwhile are
+    /// dropped, never reported.
+    var onSiteMatch: ((_ result: ScanAlignment, _ correction: simd_float4x4, _ mode: SiteMatchMode) -> Void)?
+
     // MARK: Internals
 
     private func removeAll() {

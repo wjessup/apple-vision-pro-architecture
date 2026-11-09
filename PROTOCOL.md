@@ -93,3 +93,98 @@ Clients send nothing (a `{"event":"ping"}` is tolerated and ignored).
 
 The server advertises Bonjour service `_revitsync._tcp` on its port with TXT record
 `path=/api`. Default port **8787**. Manual entry of `http://<ip>:8787` is always possible.
+
+Headsets also advertise and browse a second service, `_revitsync-peer._tcp`, to find each
+other (see *Headset to headset*). The server never takes part in it.
+
+## Headset to headset
+
+Nearby Vision Pros share their room scans and the house placement directly, with no server and
+no router. Everything below is between apps; the Revit add-in and the server are not involved.
+
+### Discovery and connection
+
+- Each headset advertises Bonjour `_revitsync-peer._tcp` and browses for it, both with
+  peer-to-peer Wi-Fi enabled, so headsets find each other over AWDL with Wi-Fi on even when no
+  network is joined (and over any shared network too).
+- TXT record `device=<uuid>`: the headset's stable device id.
+- Of each pair only the headset with the **lower** device id dials, so a pair never has two
+  connections. The other side accepts.
+- TCP. Every frame is a 4-byte big-endian length followed by a binary property list holding one
+  message. A frame may be at most 16 MB; a length above that closes the connection, because the
+  stream can no longer be trusted. A frame that fails to decode or validate is dropped and the
+  connection stays open.
+
+### Messages
+
+Matrices are column-major 4×4 as 16 floats. Dates are property-list dates.
+
+| Message | Fields | Meaning |
+| --- | --- | --- |
+| `hello` | `version` (1), `deviceID`, `name`, `site {siteID, created}`, `scanID` (own scan), `have {scanID: highest revision held}`, `tombstones [scanID]` | First message each way. A different `version` means one headset needs an app update; nothing else is exchanged. |
+| `tombstones` | `[scanID]` | Scans cleared by their headset. |
+| `origin` | `scanID`, `deviceID`, `name`, `site`, `siteFromScan`, `joinedAt`, `quality` (`root`, `sharedAnchor`, `scan`, `heightOnly`, `house`), `revision` | Where one headset's scan frame sits in its site. Only that headset publishes it; the highest `revision` wins. |
+| `placement` | `siteID`, `siteFromModel`, `placedAt`, `placedBy`, `placedByName` | The house as last placed by hand at 1:1, in the site frame. |
+| `catchUp` | `count` | The next `count` `cell` messages are the catch-up after `hello`. |
+| `cell` | `scanID`, `key {ix, iy, iz}`, `revision`, `scannedAt`, `vertices`, `indices` | One 1 m cell of one scan, in that scan's own frame: float32 xyz triples and uint32 triangle indices. |
+| `pose` | `scanID`, `scanFromHead` | The sender's head in its own scan frame, sent 4 times a second, for the name tags. |
+| `sharedAnchor` | `anchorID`, `siteID`, `siteFromAnchor` | A SharePlay shared world anchor and where it sits in the sender's site. |
+
+### Session order
+
+After both `hello`s, each side sends, in order:
+
+1. `tombstones` it holds that the peer did not list;
+2. every `origin` record it holds (its own and relayed ones);
+3. the newest site `placement`, when it holds one for the peer's site;
+4. `catchUp(count)`, then the cells: for every scan, the cells with a revision above the peer's
+   `have` for that scan (all of them when the peer has none), in **ascending revision** order.
+
+Cell revisions are unique and increasing per scan and owned by the scan's headset. Sending a
+scan's cells oldest first means a receiver cut off part-way holds a prefix of that scan's history,
+so its highest revision for the scan is a complete description of what it holds: next time it
+says `have` = that revision and receives exactly the rest.
+
+Afterwards, changes go out live: a headset sends each newly saved cell of its own scan as a
+`cell`, and relays every cell, origin and placement it accepted to its other connections. A
+relayed copy keeps the origin's `scanID` and `revision`. A receiver keeps a cell only when its
+revision is higher than the one it holds for that key, so nothing echoes back and forth. Records
+for a tombstoned scan are ignored.
+
+### Validation on receipt
+
+Any nearby headset can connect, so nothing received is trusted:
+
+- every matrix must be exactly 16 finite floats;
+- cell geometry must be whole xyz triples of finite floats and whole triangles whose indices are
+  all in range;
+- a `placement` dated more than 5 minutes in the future (a headset with a wrong clock) is rejected.
+
+A rejected message is dropped; the connection stays open.
+
+### Sites
+
+A **site** is a group of headsets sharing one frame. A headset starts its own site (`created` =
+now) and is its **root**: the site frame is the root headset's scan frame (`siteFromScan` =
+identity, quality `root`). When two headsets in different sites meet, the **older** site wins
+(earlier `created`, ties to the smaller id) and the younger headset joins it; each headset's
+`siteFromScan` says where its own scan frame sits in the site.
+
+A joining headset first lines up roughly:
+
+- from a SharePlay shared world anchor, which both headsets track at the same real spot
+  (quality `sharedAnchor`), or else
+- from the house placement: both headsets placed the house on the same real spot, so
+  `siteFromScan = siteFromModel × (scanFromModel)⁻¹` (quality `house`);
+
+then refines by matching its scan against the site's scans: height only when the walls seen do
+not fix heading and position (`heightOnly`), fully when walls facing two ways or more are seen
+(`scan`). Every improvement is published as a new `origin` revision.
+
+The site placement is newest-wins (`placedAt`, ties to the larger `placedBy`). A headset that
+accepts a newer placement moves its house there; placing the house by hand at 1:1 publishes a new
+one.
+
+**Clear scan** on a headset sends a tombstone for its scan id: every headset deletes its copies,
+will not take them back from anyone, and passes the tombstone on. The headset itself starts a new
+scan with a new id.

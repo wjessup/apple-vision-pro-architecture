@@ -2,7 +2,7 @@ name: RevitSync
 options:
   bundleIdPrefix: com.yourcompany
   deploymentTarget:
-    visionOS: "2.0"
+    visionOS: "27.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -27,16 +27,21 @@ targets:
           UIApplicationSupportsMultipleScenes: true
           UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
           UISceneConfigurations: {}
-        NSLocalNetworkUsageDescription: Revit Sync connects to the Revit sync server running on a computer on your Wi-Fi network to download models.
-        NSBonjourServiceTypes:
+        NSLocalNetworkUsageDescription: Revit Sync connects to the Revit sync server running on a computer on your Wi-Fi network to download models, and finds other headsets nearby to share the room scan and the house position with them.
+        NSBonjourServices:
           - _revitsync._tcp
+          - _revitsync-peer._tcp
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSWorldSensingUsageDescription: Revit Sync remembers where you pinned the model so it is in the same place next time, and scans your surroundings so real objects like trees hide the parts of the model behind them.
+    entitlements:
+      path: RevitSync/RevitSync.entitlements
+      properties:
+        com.apple.developer.group-session: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yourcompany.RevitSync
         TARGETED_DEVICE_FAMILY: "7"
         ENABLE_PREVIEWS: YES
         MARKETING_VERSION: "0.5.0"
-        CURRENT_PROJECT_VERSION: "5"
+        CURRENT_PROJECT_VERSION: "6"

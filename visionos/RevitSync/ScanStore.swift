@@ -8,19 +8,58 @@ struct ScanAnchorRecord: Codable, Equatable {
 }
 
 /// One remembered grid cell. Vertices are in the scan frame; `owner` is the pin whose tracked pose
-/// places the cell on screen.
+/// places the cell on screen. `revision` orders this headset's cell writes for sharing with other
+/// headsets; `scannedAt` is when the cell was last written. Cells saved before sharing existed
+/// load with revision 0 and the file's modification date.
 struct ScanCellRecord: Codable, Equatable {
     var owner: UUID
     var vertices: Data
     var indices: Data
+    var revision: Int
+    var scannedAt: Date
 
-    init(owner: UUID, geometry: ScanGeometry) {
+    init(owner: UUID, geometry: ScanGeometry, revision: Int, scannedAt: Date) {
         self.owner = owner
         vertices = geometry.vertices
         indices = geometry.indices
+        self.revision = revision
+        self.scannedAt = scannedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        owner = try c.decode(UUID.self, forKey: .owner)
+        vertices = try c.decode(Data.self, forKey: .vertices)
+        indices = try c.decode(Data.self, forKey: .indices)
+        revision = try c.decodeIfPresent(Int.self, forKey: .revision) ?? 0
+        scannedAt = try c.decodeIfPresent(Date.self, forKey: .scannedAt) ?? .distantPast
     }
 
     var geometry: ScanGeometry { ScanGeometry(vertices: vertices, indices: indices) }
+}
+
+/// This headset's scan as other headsets know it: its identity, the site it belongs to, and where
+/// its scan frame sits in that site's frame. Saved as `scans/site/scan.json`, so Clear scan (which
+/// deletes the directory) also starts a new scan and a new site.
+struct ScanIdentity: Codable, Equatable {
+    var scanID: UUID
+    var site: SiteInfo
+    /// Column-major 4×4; identity for the headset that started the site.
+    var siteFromScan: [Float]
+    var joinedAt: Date
+    var quality: AlignmentQuality
+    /// Revision the next cell write gets.
+    var nextRevision: Int
+    /// Revision of the last published `OriginRecord`.
+    var originRevision: Int
+
+    /// A new scan starting its own site.
+    static func fresh(now: Date = Date()) -> ScanIdentity {
+        ScanIdentity(
+            scanID: UUID(), site: SiteInfo(siteID: UUID(), created: now),
+            siteFromScan: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            joinedAt: now, quality: .root, nextRevision: 1, originRevision: 0)
+    }
 }
 
 /// The property's one scan, shared by every model, kept beside `ModelLibrary.root` in `scans/site/`:
@@ -67,10 +106,34 @@ enum ScanStore {
         for file in cellFiles where file.pathExtension == "cell" {
             guard let key = CellKey(fileName: file.deletingPathExtension().lastPathComponent),
                   let data = try? Data(contentsOf: file),
-                  let record = try? decoder.decode(ScanCellRecord.self, from: data) else { continue }
+                  var record = try? decoder.decode(ScanCellRecord.self, from: data) else { continue }
+            if record.scannedAt == .distantPast {
+                record.scannedAt = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            }
             loaded.cells[key] = record
         }
         return loaded
+    }
+
+    /// This headset's scan identity; a scan saved before sharing existed gets a fresh one, which
+    /// starts its own site.
+    static func loadIdentity() -> ScanIdentity {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        if let identity = (try? Data(contentsOf: identityFile)).flatMap({ try? decoder.decode(ScanIdentity.self, from: $0) }) {
+            return identity
+        }
+        let identity = ScanIdentity.fresh()
+        saveIdentity(identity)
+        return identity
+    }
+
+    static func saveIdentity(_ identity: ScanIdentity) {
+        let dir = directory
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        try? encoder.encode(identity).write(to: identityFile, options: .atomic)
     }
 
     static func saveAnchors(_ anchors: [ScanAnchorRecord]) {
@@ -97,7 +160,7 @@ enum ScanStore {
         let fm = FileManager.default
         if let project { try? fm.moveItem(at: root.appending(path: project, directoryHint: .isDirectory), to: directory) }
         let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-        for dir in dirs where dir.lastPathComponent != "site"
+        for dir in dirs where dir.lastPathComponent != "site" && dir.lastPathComponent != "peers"
             && (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
             let anchors = (try? Data(contentsOf: dir.appending(path: "anchors.json")))
                 .flatMap { try? JSONDecoder().decode([ScanAnchorRecord].self, from: $0) }?.map(\.id) ?? []
@@ -133,4 +196,6 @@ enum ScanStore {
     static var directory: URL { root.appending(path: "site", directoryHint: .isDirectory) }
 
     private static var cells: URL { directory.appending(path: "cells", directoryHint: .isDirectory) }
+
+    private static var identityFile: URL { directory.appending(path: "scan.json") }
 }

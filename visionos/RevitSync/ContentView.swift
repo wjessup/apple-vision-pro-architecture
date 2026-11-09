@@ -197,6 +197,10 @@ struct ContentView: View {
             Label(scanStatus, systemImage: "square.grid.3x3")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Toggle("Show anchors", isOn: $model.showAnchors)
+            Text("Posts mark where the headset has pinned the house (tall, with an arrow pointing to Revit north) and the room scan (short). Green: the headset recognises that spot now. Grey: not recognised yet, so its position is estimated. A number on a post is how far drift correction has moved it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("Clear scan", role: .destructive) { confirmClearScan = true }
                 .disabled(scan.patchCount == 0)
                 .confirmationDialog("Clear the scan of the property?", isPresented: $confirmClearScan, titleVisibility: .visible) {

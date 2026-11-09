@@ -52,11 +52,20 @@ final class AppModel {
     var phase: SyncPhase = .idle
     var lastError: String?
     var immersiveOpen = false
-    var locked = false {
-        didSet { scene.setLocked(locked) }
+    var locked = UserDefaults.standard.bool(forKey: "lockPosition") {
+        didSet {
+            UserDefaults.standard.set(locked, forKey: "lockPosition")
+            scene.setLocked(locked)
+        }
     }
     var showScanMesh = false {
         didSet { scene.scanMesh.isVisible = showScanMesh }
+    }
+    var showAnchors = UserDefaults.standard.bool(forKey: "showAnchors") {
+        didSet {
+            UserDefaults.standard.set(showAnchors, forKey: "showAnchors")
+            scene.anchorMarkers.isEnabled = showAnchors
+        }
     }
     var placementMode = PlacementMode(rawValue: UserDefaults.standard.string(forKey: "placementMode") ?? "") ?? .basic {
         didSet {
@@ -78,6 +87,9 @@ final class AppModel {
 
     init() {
         scene.setMode(placementMode)
+        // didSet does not run for the saved values.
+        scene.setLocked(locked)
+        scene.anchorMarkers.isEnabled = showAnchors
         if let id = selectedProjectID, library[id] != nil {
             activateScene(project: id)
         } else {

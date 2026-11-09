@@ -9,6 +9,9 @@ import RealityKit
 /// as visionOS recognises any one pin, and a live chunk only hides the cells it has triangles in.
 /// The saved geometry is always complete; what is displayed is that geometry minus the triangles
 /// inside the model's voids (pools, ramps), recut whenever voids, placement or pins move.
+/// Tracking drifts over long walks, so remembered cells can sit a few centimetres off the live
+/// scan; each pin carries a session-only correction found by registering live chunks against its
+/// cells, and only geometry that still disagrees after that is treated as a real change.
 @MainActor
 @Observable
 final class ScanMesh {
@@ -32,7 +35,10 @@ final class ScanMesh {
         var mesh: MeshResource
         var geometry = ScanGeometry()
         var originFromPatch = matrix_identity_float4x4
+        /// Cells the chunk has triangles in.
         var covering: Set<CellKey> = []
+        /// Covered cells it hides: all but those whose pin last registered as drift.
+        var hiding: Set<CellKey> = []
 
         var position: SIMD3<Float> { ScanMesh.translation(originFromPatch) }
     }
@@ -48,7 +54,29 @@ final class ScanMesh {
         let scanFromAnchor: simd_float4x4
         var originFromAnchor: simd_float4x4?
         let group: Entity
+        /// Session-only drift correction applied on top of `base`, in the origin frame.
+        var correction = matrix_identity_float4x4
+        /// Bumped whenever `correction` changes, so a registration started before is dropped.
+        var generation = 0
+        /// Origin-from-scan this pin was last placed by, before the correction.
+        var base: simd_float4x4?
+        /// The latest registration of a live chunk against this pin's cells found only drift.
+        var drifting = false
+        var lastRegistration: Date?
+        var registering = false
     }
+
+    struct PinPose {
+        let id: UUID
+        let originFromPin: simd_float4x4
+        let tracked: Bool
+        /// Metres the drift correction moves the pin.
+        let correction: Float
+    }
+
+    private static let registrationInterval: TimeInterval = 2
+    private static let relocalisationShift: Float = 0.05
+    private static let relocalisationYaw: Float = 0.5 * .pi / 180
 
     private let liveRoot = Entity()
     private let rememberedRoot = Entity()
@@ -100,6 +128,7 @@ final class ScanMesh {
             display(patch, material: liveMaterial)
             cover(&patch)
             live[anchor.id] = patch
+            registerDrift(patchID: anchor.id)
         case .removed:
             guard let patch = live.removeValue(forKey: anchor.id) else { return }
             freeze(patch)
@@ -138,18 +167,25 @@ final class ScanMesh {
 
     func hasAnchor(_ id: UUID) -> Bool { anchors[id] != nil }
 
-    /// Session-origin positions of every pin: tracked ones where visionOS reports them, the rest
-    /// estimated through the nearest tracked pin. Empty while nothing is tracked.
-    var anchorPositions: [SIMD3<Float>] {
-        anchors.values.compactMap { anchor in
-            if let originFromAnchor = anchor.originFromAnchor { return Self.translation(originFromAnchor) }
-            guard let via = nearestTracked(toScan: Self.translation(anchor.scanFromAnchor)) else { return nil }
-            return Self.translation(originFromScan(via: via) * anchor.scanFromAnchor)
+    /// Session-origin pose of every pin with its drift correction applied: tracked ones where
+    /// visionOS reports them, the rest estimated through the nearest tracked pin. Empty while
+    /// nothing is tracked.
+    var pinPoses: [PinPose] {
+        anchors.compactMap { id, anchor in
+            guard let originFromScan = originFromScan(for: id), let base = anchor.base else { return nil }
+            let pose = originFromScan * anchor.scanFromAnchor
+            let correction = simd_distance(Self.translation(pose), Self.translation(base * anchor.scanFromAnchor))
+            return PinPose(id: id, originFromPin: pose, tracked: anchor.originFromAnchor != nil, correction: correction)
         }
     }
 
     func originFromScan(near position: SIMD3<Float>) -> simd_float4x4? {
-        nearestTracked(toOrigin: position).map(originFromScan(via:))
+        nearestTracked(toOrigin: position).flatMap(originFromScan(for:))
+    }
+
+    /// The scan frame as placed by the pin nearest a scan-frame position, tracked or not.
+    func originFromScan(nearScan position: SIMD3<Float>) -> simd_float4x4? {
+        nearestPin(toScan: position).flatMap(originFromScan(for:))
     }
 
     func addAnchor(id: UUID, scanFromAnchor: simd_float4x4, originFromAnchor: simd_float4x4) {
@@ -169,7 +205,7 @@ final class ScanMesh {
     func load(anchors: [ScanAnchorRecord], cells: [CellKey: ScanCellRecord]) {
         removeAll()
         for record in anchors {
-            self.anchors[record.id] = Anchor(scanFromAnchor: Self.matrix(record.scanFromAnchor), originFromAnchor: nil, group: makeGroup())
+            self.anchors[record.id] = Anchor(scanFromAnchor: Self.matrix(record.scanFromAnchor), group: makeGroup())
         }
         for (key, record) in cells { setCell(key, record) }
         recount()
@@ -196,13 +232,26 @@ final class ScanMesh {
     }
 
     /// Places every pin's group: by its own tracked pose, else by the nearest tracked pin's estimate
-    /// of the scan frame. Gaining the first tracked pin commits what was frozen without one.
+    /// of the scan frame, then its drift correction. A correction is dropped when the pose under it
+    /// jumps (visionOS relocalised the pin, or it is now placed through another pin), since it was
+    /// measured against the old one. Gaining the first tracked pin commits what was frozen without one.
     private func refreshAlignment() {
         let aligned = anchors.values.contains { $0.originFromAnchor != nil }
-        for (id, anchor) in anchors {
-            let via = anchor.originFromAnchor != nil ? id : nearestTracked(toScan: Self.translation(anchor.scanFromAnchor))
-            if let via { anchor.group.transform = Transform(matrix: originFromScan(via: via)) }
+        var redrift = false
+        for id in Array(anchors.keys) {
+            let base = base(for: id)
+            if let base, let old = anchors[id]!.base, !Self.jumped(from: old, to: base, at: anchors[id]!.scanFromAnchor) {
+                anchors[id]!.base = base
+            } else {
+                anchors[id]!.base = base
+                if anchors[id]!.correction != matrix_identity_float4x4 || anchors[id]!.drifting { redrift = true }
+                anchors[id]!.correction = matrix_identity_float4x4
+                anchors[id]!.generation += 1
+                anchors[id]!.drifting = false
+            }
+            if let originFromScan = originFromScan(for: id) { anchors[id]!.group.transform = Transform(matrix: originFromScan) }
         }
+        if redrift, aligned { recoverLive() }
         // Moving a group moves its cells relative to the voids.
         if !voids.isEmpty { cells.values.forEach(display) }
         rememberedRoot.isEnabled = aligned
@@ -210,24 +259,52 @@ final class ScanMesh {
         isAligned = aligned
         guard aligned != wasAligned else { return }
         if aligned {
-            for id in live.keys {
-                var patch = live[id]!
-                cover(&patch)
-                live[id] = patch
-            }
+            recoverLive()
             for patch in pendingFreeze { commit(patch) }
             pendingFreeze.removeAll()
         } else {
-            for id in live.keys { live[id]?.covering = [] }
+            for id in live.keys {
+                live[id]?.covering = []
+                live[id]?.hiding = []
+            }
             coverCounts.removeAll()
             cells.values.forEach { $0.occluder.isEnabled = true }
         }
         recount()
     }
 
-    private func originFromScan(via id: UUID) -> simd_float4x4 {
+    private func recoverLive() {
+        for id in live.keys {
+            var patch = live[id]!
+            cover(&patch)
+            live[id] = patch
+        }
+    }
+
+    /// Origin-from-scan as pin `id` places it before its correction: its own tracked pose, else the
+    /// nearest tracked pin's. Nil while nothing is tracked.
+    private func base(for id: UUID) -> simd_float4x4? {
         let anchor = anchors[id]!
-        return anchor.originFromAnchor! * anchor.scanFromAnchor.inverse
+        guard let via = anchor.originFromAnchor != nil ? id : nearestTracked(toScan: Self.translation(anchor.scanFromAnchor)) else { return nil }
+        let pin = anchors[via]!
+        return pin.originFromAnchor! * pin.scanFromAnchor.inverse
+    }
+
+    /// Where pin `id`'s group puts the scan frame this session: its base with its drift correction.
+    private func originFromScan(for id: UUID) -> simd_float4x4? {
+        guard let anchor = anchors[id], let base = anchor.base else { return nil }
+        return anchor.correction * base
+    }
+
+    private static func jumped(from old: simd_float4x4, to new: simd_float4x4, at scanFromPin: simd_float4x4) -> Bool {
+        let a = old * scanFromPin, b = new * scanFromPin
+        if simd_distance(translation(a), translation(b)) > relocalisationShift { return true }
+        let turn = (simd_quatf(b) * simd_quatf(a).inverse).angle
+        return min(turn, 2 * .pi - turn) > relocalisationYaw
+    }
+
+    private func nearestPin(toScan position: SIMD3<Float>) -> UUID? {
+        anchors.min { simd_distance(Self.translation($0.value.scanFromAnchor), position) < simd_distance(Self.translation($1.value.scanFromAnchor), position) }?.key
     }
 
     private func nearestTracked(toOrigin position: SIMD3<Float>) -> UUID? {
@@ -243,15 +320,78 @@ final class ScanMesh {
             .key
     }
 
+    /// Hides the remembered cells a live chunk has triangles in, except those whose pin last
+    /// registered as drift: once corrected they line up with the chunk, so hiding them would only
+    /// flicker.
     private func cover(_ patch: inout Patch) {
         guard let originFromScan = originFromScan(near: patch.position) else { return }
-        let keys = ScanGrid.keys(of: patch.geometry, scanFromGeometry: Self.columns(originFromScan.inverse * patch.originFromPatch))
-        for key in patch.covering.subtracting(keys) { release(key) }
-        for key in keys.subtracting(patch.covering) {
+        patch.covering = ScanGrid.keys(of: patch.geometry, scanFromGeometry: Self.columns(originFromScan.inverse * patch.originFromPatch))
+        let hiding = patch.covering.filter { key in
+            guard let owner = cells[key]?.record.owner else { return true }
+            return anchors[owner]?.drifting != true
+        }
+        for key in patch.hiding.subtracting(hiding) { release(key) }
+        for key in hiding.subtracting(patch.hiding) {
             coverCounts[key, default: 0] += 1
             cells[key]?.occluder.isEnabled = false
         }
-        patch.covering = keys
+        patch.hiding = hiding
+    }
+
+    /// Registers the live chunk against the remembered cells it overlaps, once per pin every two
+    /// seconds, off the main actor. Drift composes into the pin's correction and keeps its cells
+    /// shown; anything else (a real change, or too little overlap to tell) leaves them hidden to be
+    /// replaced when the chunk freezes.
+    private func registerDrift(patchID: UUID) {
+        guard isAligned, let patch = live[patchID] else { return }
+        let now = Date()
+        let owners = Set(patch.covering.compactMap { cells[$0]?.record.owner })
+        for owner in owners {
+            guard let anchor = anchors[owner], !anchor.registering,
+                  anchor.lastRegistration.map({ now.timeIntervalSince($0) >= Self.registrationInterval }) ?? true,
+                  let originFromScan = originFromScan(for: owner) else { continue }
+            let remembered = patch.covering.compactMap { cells[$0] }.filter { $0.record.owner == owner }.map(\.record.vertices)
+            let liveGeometry = patch.geometry
+            let originFromPatch = patch.originFromPatch
+            let generation = anchor.generation
+            anchors[owner]!.registering = true
+            anchors[owner]!.lastRegistration = now
+            Task {
+                let result = await Task.detached {
+                    Self.register(remembered: remembered, originFromScan: originFromScan, live: liveGeometry, originFromPatch: originFromPatch)
+                }.value
+                self.registered(owner, result, generation: generation)
+            }
+        }
+    }
+
+    private nonisolated static func register(remembered: [Data], originFromScan: simd_float4x4, live: ScanGeometry, originFromPatch: simd_float4x4) -> ScanAlignment {
+        let livePositions = ScanGrid.positions(live.vertices).map { transformed(originFromPatch, $0) }
+        guard let first = livePositions.first else { return ScanAlignment() }
+        // Only remembered geometry inside what the chunk observed (plus the search radius) can match.
+        let margin = SIMD3<Float>(repeating: ScanAlign.radii[0])
+        let lo = livePositions.reduce(first, simd_min) - margin
+        let hi = livePositions.reduce(first, simd_max) + margin
+        let source = remembered.flatMap(ScanGrid.positions).map { transformed(originFromScan, $0) }.filter { all($0 .>= lo) && all($0 .<= hi) }
+        return ScanAlign.register(source: source, target: ScanAlign.Target(positions: livePositions, indices: ScanGrid.indices(live.indices)))
+    }
+
+    private func registered(_ owner: UUID, _ result: ScanAlignment, generation: Int) {
+        guard anchors[owner] != nil else { return }
+        anchors[owner]!.registering = false
+        // The pose under the correction moved while registering; the result is against the old one.
+        guard anchors[owner]!.generation == generation else { return }
+        let drifting = result.isDrift
+        if drifting {
+            anchors[owner]!.correction = Self.matrix(result.columns) * anchors[owner]!.correction
+            anchors[owner]!.generation += 1
+            if let originFromScan = originFromScan(for: owner) { anchors[owner]!.group.transform = Transform(matrix: originFromScan) }
+            if !voids.isEmpty { cells.values.filter { $0.record.owner == owner }.forEach(display) }
+        }
+        guard drifting != anchors[owner]!.drifting else { return }
+        anchors[owner]!.drifting = drifting
+        recoverLive()
+        recount()
     }
 
     private func release(_ key: CellKey) {
@@ -274,22 +414,28 @@ final class ScanMesh {
     }
 
     private func commit(_ patch: Patch) {
-        for key in patch.covering { release(key) }
+        for key in patch.hiding { release(key) }
         writeCells(from: patch)
         patch.occluder.removeFromParent()
     }
 
-    /// Bins the chunk into cells owned by the tracked pin nearest each cell, expressed through that
-    /// pin's estimate of the scan frame, and merges each with what the cell already holds.
+    /// Bins the chunk into cells owned by the pin nearest each cell, tracked or not, expressed
+    /// through that pin's corrected estimate of the scan frame, and merges each with what the cell
+    /// already holds. A cell moving to another pin has its old geometry carried over to the new
+    /// pin's frame first, so it stays where it was drawn.
     private func writeCells(from patch: Patch) {
-        guard let nearest = nearestTracked(toOrigin: patch.position), let box = ScanGrid.bounds(of: patch.geometry) else { return }
-        let scanFromPatch = originFromScan(via: nearest).inverse * patch.originFromPatch
+        guard let originFromScan = originFromScan(near: patch.position), let box = ScanGrid.bounds(of: patch.geometry) else { return }
+        let scanFromPatch = originFromScan.inverse * patch.originFromPatch
         for (key, part) in ScanGrid.bin(patch.geometry, scanFromGeometry: Self.columns(scanFromPatch)) {
-            let owner = nearestTracked(toScan: key.center) ?? nearest
-            let ownerScanFromPatch = originFromScan(via: owner).inverse * patch.originFromPatch
+            guard let owner = nearestPin(toScan: key.center), let ownerOriginFromScan = self.originFromScan(for: owner) else { continue }
+            let ownerScanFromPatch = ownerOriginFromScan.inverse * patch.originFromPatch
             let fresh = ScanGrid.transformed(part, by: Self.columns(ownerScanFromPatch))
-            let geometry = cells[key].map {
-                ScanGrid.merged(old: $0.record.geometry, replacingInside: box, boxFromOld: Self.columns(ownerScanFromPatch.inverse), with: fresh)
+            let geometry = cells[key].map { cell in
+                var old = cell.record.geometry
+                if cell.record.owner != owner, let previous = self.originFromScan(for: cell.record.owner) {
+                    old = ScanGrid.transformed(old, by: Self.columns(ownerOriginFromScan.inverse * previous))
+                }
+                return ScanGrid.merged(old: old, replacingInside: box, boxFromOld: Self.columns(ownerScanFromPatch.inverse), with: fresh)
             } ?? fresh
             let record = ScanCellRecord(owner: owner, geometry: geometry)
             setCell(key, record)
@@ -437,11 +583,17 @@ final class ScanMesh {
         SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
     }
 
-    private static func columns(_ m: simd_float4x4) -> [Float] {
+    private nonisolated static func transformed(_ m: simd_float4x4, _ p: SIMD3<Float>) -> SIMD3<Float> {
+        let q = m * SIMD4(p, 1)
+        return SIMD3(q.x, q.y, q.z)
+    }
+
+    /// Column-major packing of a 4×4 matrix, as saved in `ScanAnchorRecord` and `Placement`.
+    static func columns(_ m: simd_float4x4) -> [Float] {
         [m.columns.0, m.columns.1, m.columns.2, m.columns.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
     }
 
-    private static func matrix(_ v: [Float]) -> simd_float4x4 {
+    static func matrix(_ v: [Float]) -> simd_float4x4 {
         guard v.count == 16 else { return matrix_identity_float4x4 }
         return simd_float4x4(
             SIMD4(v[0], v[1], v[2], v[3]), SIMD4(v[4], v[5], v[6], v[7]),

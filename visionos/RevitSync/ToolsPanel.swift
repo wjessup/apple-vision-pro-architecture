@@ -8,6 +8,19 @@ struct ToolsPanel: View {
     var body: some View {
         let scene = model.scene
         let voidActive = scene.tool == .voidSurface || scene.tool == .voidPolygon
+        VStack(spacing: 6) {
+            tools(scene, voidActive: voidActive)
+            if let notice = scene.placementNotice {
+                Label(notice, systemImage: scene.isSearching ? "location.magnifyingglass" : "checkmark.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(scene.isSearching ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
+            }
+        }
+        .padding(10)
+        .glassBackgroundEffect()
+    }
+
+    private func tools(_ scene: SceneController, voidActive: Bool) -> some View {
         HStack(spacing: 4) {
             iconButton("Bring window here", systemImage: "macwindow", action: bringWindow)
             iconButton("Measure", systemImage: "ruler", active: scene.tool == .measure, color: .yellow) {
@@ -45,8 +58,6 @@ struct ToolsPanel: View {
             .disabled(scene.selection == nil)
         }
         .font(.title2)
-        .padding(10)
-        .glassBackgroundEffect()
     }
 
     private func iconButton(
@@ -117,13 +128,15 @@ struct PlacementControls: View {
         @Bindable var model = model
         let scene = model.scene
         let cornerLocked = !scene.lockedCorners.isEmpty
+        // Until the saved placement is found, only starting over is allowed.
+        let searching = scene.isSearching
         Picker("Mode", selection: $model.placementMode) {
             ForEach(PlacementMode.allCases) { mode in
                 Text(mode.label).tag(mode)
             }
         }
         .pickerStyle(.segmented)
-        .disabled(model.locked)
+        .disabled(model.locked || searching)
         Picker("Scale", selection: Binding(
             get: { ScalePreset.allCases.first { abs($0.rawValue - model.scene.placement.scale) < 0.0001 } },
             set: { preset in
@@ -136,16 +149,16 @@ struct PlacementControls: View {
             }
         }
         .pickerStyle(.segmented)
-        .disabled(model.locked || cornerLocked)
+        .disabled(model.locked || cornerLocked || searching)
         if model.placementMode == .precise {
-            preciseControls.disabled(model.locked)
+            preciseControls.disabled(model.locked || searching)
         }
         if model.placementMode == .corners, scene.corners != nil {
-            cornerRows.disabled(model.locked)
+            cornerRows.disabled(model.locked || searching)
         }
         Toggle("Lock position", isOn: $model.locked)
         Button("Place in front of me") { scene.placeInFrontOfUser() }
-            .disabled(model.locked || cornerLocked || !model.immersiveOpen)
+            .disabled(model.locked || (cornerLocked && !searching) || !model.immersiveOpen)
         Text(placementCaption)
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -189,8 +202,11 @@ struct PlacementControls: View {
     }
 
     private var placementCaption: String {
-        if model.locked { return "Locked: pinches won't move the model." }
         let scene = model.scene
+        if scene.isSearching {
+            return "Finding where you placed the house. Look around that spot; the model appears once the headset recognises it. Place in front of me starts over instead."
+        }
+        if model.locked { return "Locked: pinches won't move the model." }
         let sizeHint = scene.scaleLocked && abs(scene.placement.scale - ScalePreset.full.rawValue) > 0.0001
             ? " Choose 1:1 Real size to see it at full scale." : ""
         switch model.placementMode {

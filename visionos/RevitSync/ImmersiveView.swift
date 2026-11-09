@@ -20,6 +20,7 @@ struct ImmersiveView: View {
         RealityView { content, attachments in
             content.add(scene.root)
             content.add(scene.scanMesh.root)
+            content.add(scene.anchorMarkers)
             scene.startTracking()
             scene.resetPanel()
             content.add(scene.panelRoot)
@@ -31,6 +32,7 @@ struct ImmersiveView: View {
                 scene.updatePanel(deltaTime: Float(event.deltaTime), follow: model.followMe)
                 scene.updateCornerBallSize()
                 scene.updateMarkSizes()
+                scene.updateAnchorMarkers()
             }
         } update: { _, attachments in
             for measurement in scene.measurements {

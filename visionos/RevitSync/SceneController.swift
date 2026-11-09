@@ -13,8 +13,28 @@ struct Placement: Codable, Equatable {
     var lockedCorners: [Int]?
     /// Ground-floor corners (model space) of the model this placement was set with.
     var footprint: [SIMD3<Float>]?
+    /// Where the model sits in the room scan's frame (column-major 4×4, like
+    /// `ScanAnchorRecord.scanFromAnchor`), so any recognised scan pin can restore the house when its
+    /// own world anchor is not found. Nil until placed while the scan is aligned, and after Clear scan.
+    var scanFromModel: [Float]?
 
     static let tabletop = Placement(position: [0, 0.8, -1.0], yaw: 0, scale: ScalePreset.fiftieth.rawValue)
+}
+
+/// Whether the saved placement has been located in this session. Saved numbers are in the
+/// previous session's coordinates, so the model stays hidden until a world anchor locates it.
+enum PlacementStatus: Equatable {
+    /// Nothing saved to look for (first use), or placed by hand this session.
+    case placed
+    case searching(since: Date)
+    case found(via: PlacementSource, after: TimeInterval)
+}
+
+enum PlacementSource {
+    /// The model's own world anchor.
+    case anchor
+    /// The room scan's pins, through `Placement.scanFromModel`.
+    case scan
 }
 
 enum ScalePreset: Float, CaseIterable, Identifiable {
@@ -89,6 +109,19 @@ final class SceneController {
     let panelGrip: ModelEntity
 
     private(set) var placement = Placement.tabletop
+    private(set) var placementStatus = PlacementStatus.placed {
+        didSet { root.isEnabled = !isSearching }
+    }
+    /// Shown on the tools panel while searching and for a few seconds after the placement is found.
+    private(set) var placementNotice: String?
+    private var noticeTask: Task<Void, Never>?
+    private var searchStart: Date?
+    private var houseAnchorTracked = false
+    /// Posts at every world anchor (model and scan pins); shown with *Show anchors*. Outside `root`,
+    /// so they stay visible while the model is hidden and are never scaled with it.
+    let anchorMarkers = Entity()
+    private let housePin: Entity
+    private var pinMarkers: [UUID: (entity: Entity, tracked: Bool, label: Int)] = [:]
     private(set) var mode = PlacementMode.basic
     private(set) var corners: [SIMD3<Float>]?
     /// The loaded model's ground-floor corners are more than a foot from the placed house's.
@@ -176,6 +209,11 @@ final class SceneController {
     init(legacyProject: String?) {
         Self.adoptLegacySite(keeping: legacyProject)
         placement = Placement.load() ?? .tabletop
+        if placement.anchorID != nil || placement.scanFromModel != nil {
+            placementStatus = .searching(since: Date())
+            placementNotice = Self.searchingNotice
+        }
+        housePin = Self.post(height: 1.2, arrow: true)
         handle = ModelEntity(
             mesh: .generateSphere(radius: 0.035),
             materials: [SimpleMaterial(color: .systemBlue, roughness: 0.3, isMetallic: false)])
@@ -222,6 +260,11 @@ final class SceneController {
         }
 
         root.name = "root"
+        root.isEnabled = !isSearching
+        anchorMarkers.name = "anchorMarkers"
+        anchorMarkers.isEnabled = false
+        housePin.isEnabled = false
+        anchorMarkers.addChild(housePin)
         root.components.set(InputTargetComponent())
         root.addChild(model)
         root.addChild(handle)
@@ -938,18 +981,113 @@ final class SceneController {
             yaw = atan2(forward.x, forward.z) + .pi
         }
         position.y = placement.scale >= 0.5 ? 0 : 0.8
+        // While searching this starts over: the saved anchor and locked corners are given up.
+        if isSearching {
+            placement.lockedCorners = nil
+            refreshCornerBalls()
+            setStatus(.placed)
+        }
         placement.position = position
         placement.yaw = Self.normalized(yaw)
         applyPlacement()
         commitPlacement()
     }
 
+    var isSearching: Bool {
+        if case .searching = placementStatus { return true }
+        return false
+    }
+
+    private static let searchingNotice = "Finding your placement… look around where you placed the house"
+
+    private func setStatus(_ status: PlacementStatus) {
+        placementStatus = status
+        noticeTask?.cancel()
+        switch status {
+        case .placed:
+            placementNotice = nil
+        case .searching:
+            placementNotice = Self.searchingNotice
+        case .found(let via, let after):
+            placementNotice = via == .scan
+                ? "Placement restored from the room scan"
+                : "Placement found after \(Int(after.rounded())) s"
+            noticeTask = Task {
+                try? await Task.sleep(for: .seconds(10))
+                if !Task.isCancelled { placementNotice = nil }
+            }
+        }
+    }
+
+    /// Ends a search, or upgrades a placement restored from the scan once the model's own, more
+    /// precise anchor is found.
+    private func found(via source: PlacementSource) {
+        switch placementStatus {
+        case .searching(let since):
+            searchStart = since
+        case .found(.scan, _) where source == .anchor:
+            break
+        default:
+            return
+        }
+        setStatus(.found(via: source, after: Date().timeIntervalSince(searchStart ?? Date())))
+    }
+
+    /// The model's own world anchor locates it: adopt its pose. While searching this ends the
+    /// search, and records the model in the scan frame if it never was, so the scan can restore it
+    /// next time.
+    private func adoptAnchorPose(_ m: simd_float4x4) {
+        placement.position = Self.translation(m)
+        placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
+        applyPlacement()
+        pushVoids()
+        found(via: .anchor)
+        recordScanFrame()
+    }
+
+    /// With the model's anchor not found yet, any recognised scan pin can place it through
+    /// `scanFromModel`; once located, a model never placed in the scan frame gets recorded in it.
+    private func syncScanFrame() {
+        guard scanMesh.isAligned else { return }
+        if isSearching {
+            guard let scanFromModel = placement.scanFromModel.map(ScanMesh.matrix),
+                  let originFromScan = scanMesh.originFromScan(nearScan: Self.translation(scanFromModel)) else { return }
+            let m = originFromScan * scanFromModel
+            placement.position = Self.translation(m)
+            placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
+            applyPlacement()
+            pushVoids()
+            found(via: .scan)
+        } else {
+            recordScanFrame()
+        }
+    }
+
+    private func recordScanFrame() {
+        guard placement.scanFromModel == nil, !isSearching,
+              let originFromScan = scanMesh.originFromScan(near: placement.position) else { return }
+        placement.scanFromModel = ScanMesh.columns(originFromScan.inverse * placementTransform)
+        placement.save()
+    }
+
+    /// The model's pose without scale: what its world anchor and `scanFromModel` record.
+    private var placementTransform: simd_float4x4 {
+        var transform = simd_float4x4(simd_quatf(angle: placement.yaw, axis: [0, 1, 0]))
+        transform.columns.3 = SIMD4(placement.position, 1)
+        return transform
+    }
+
+    /// Saves the placement and re-pins its world anchor. Refused while searching: the saved anchor
+    /// is the only record of where the house really is, and a commit now would replace it with one
+    /// at the wrong spot.
     func commitPlacement() {
+        guard !isSearching else { return }
         // The model placed last is the house every other model is checked against.
         if let corners {
             placement.footprint = corners
             footprintMismatch = false
         }
+        placement.scanFromModel = scanMesh.originFromScan(near: placement.position).map { ScanMesh.columns($0.inverse * placementTransform) }
         placement.save()
         pushVoids()
         pinTask = Task { [previous = pinTask] in
@@ -984,15 +1122,23 @@ final class SceneController {
     // MARK: World tracking
 
     func startTracking() {
-        guard trackingTask == nil, WorldTrackingProvider.isSupported else { return }
+        guard trackingTask == nil else { return }
+        guard WorldTrackingProvider.isSupported else {
+            // Nothing could ever locate the saved placement (Simulator), so show it as saved.
+            if isSearching { setStatus(.placed) }
+            return
+        }
         let reconstructs = SceneReconstructionProvider.isSupported
         let providers: [any DataProvider] = reconstructs ? [worldTracking, sceneReconstruction] : [worldTracking]
         trackingTask = Task {
             do {
                 try await session.run(providers)
             } catch {
+                if isSearching { setStatus(.placed) }
                 return
             }
+            // The search is timed from when tracking starts, not from app launch.
+            if isSearching { setStatus(.searching(since: Date())) }
             if reconstructs {
                 Task {
                     for await update in sceneReconstruction.anchorUpdates {
@@ -1007,24 +1153,28 @@ final class SceneController {
                 for await event in session.events {
                     if case .dataProviderStateChanged(_, .running, _) = event {
                         await ensureScanAnchors()
+                        await locatePlacement()
                     }
                 }
             }
-            Task { await ensureScanAnchors() }
+            Task {
+                await ensureScanAnchors()
+                await locatePlacement()
+            }
             for await update in worldTracking.anchorUpdates {
                 let m = update.anchor.originFromAnchorTransform
                 var removed = false
                 if case .removed = update.event { removed = true }
+                let tracked = update.anchor.isTracked && !removed
                 if scanMesh.hasAnchor(update.anchor.id) {
-                    scanMesh.anchorUpdated(update.anchor.id, originFromAnchor: m, tracked: update.anchor.isTracked && !removed)
+                    scanMesh.anchorUpdated(update.anchor.id, originFromAnchor: m, tracked: tracked)
+                    syncScanFrame()
                     continue
                 }
-                guard update.anchor.isTracked, !removed else { continue }
-                guard update.anchor.id == placement.anchorID, !isGesturing else { continue }
-                placement.position = [m.columns.3.x, m.columns.3.y, m.columns.3.z]
-                placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
-                applyPlacement()
-                pushVoids()
+                guard update.anchor.id == placement.anchorID else { continue }
+                houseAnchorTracked = tracked
+                guard tracked, !isGesturing else { continue }
+                adoptAnchorPose(m)
             }
         }
     }
@@ -1051,6 +1201,16 @@ final class SceneController {
         for anchor in known where ids.contains(anchor.id) {
             scanMesh.anchorUpdated(anchor.id, originFromAnchor: anchor.originFromAnchorTransform, tracked: anchor.isTracked)
         }
+        syncScanFrame()
+    }
+
+    /// The model's anchor may already be tracked when tracking starts, in which case no update
+    /// arrives for it; read it directly, as `ensureScanAnchors` does for the scan pins.
+    private func locatePlacement() async {
+        guard worldTracking.state == .running, let id = placement.anchorID,
+              let anchor = await worldTracking.allAnchors?.first(where: { $0.id == id }) else { return }
+        houseAnchorTracked = anchor.isTracked
+        if anchor.isTracked, !isGesturing { adoptAnchorPose(anchor.originFromAnchorTransform) }
     }
 
     /// Adds a pin when the scan has none, or once the wearer is farther than the spacing from
@@ -1084,7 +1244,7 @@ final class SceneController {
         originFromAnchor.columns.3 = SIMD4(position, 1)
         if scanMesh.anchorIDs.isEmpty { return (originFromAnchor, matrix_identity_float4x4) }
         guard let originFromScan = scanMesh.originFromScan(near: position),
-              scanMesh.anchorPositions.allSatisfy({ simd_distance($0, position) > Self.scanAnchorSpacing })
+              scanMesh.pinPoses.allSatisfy({ simd_distance(Self.translation($0.originFromPin), position) > Self.scanAnchorSpacing })
         else { return nil }
         return (originFromAnchor, originFromScan.inverse * originFromAnchor)
     }
@@ -1094,7 +1254,91 @@ final class SceneController {
         ScanStore.addStaleAnchors(scanMesh.anchorIDs)
         scanEpoch += 1
         scanMesh.clear()
+        // The next scan starts a new frame, which the old record means nothing in.
+        placement.scanFromModel = nil
+        placement.save()
         Task { await ensureScanAnchors() }
+    }
+
+    // MARK: Anchor markers
+
+    private static let trackedMarkerMaterial = UnlitMaterial(color: .systemGreen)
+    private static let estimatedMarkerMaterial = UnlitMaterial(color: .systemGray)
+
+    /// A post standing on an anchor; with `arrow`, a cone at the top points along the model's −Z
+    /// (Revit north). No collider or input target, so it never takes a pinch.
+    private static func post(height: Float, arrow: Bool) -> Entity {
+        let post = Entity()
+        let pole = ModelEntity(mesh: .generateCylinder(height: height, radius: 0.012), materials: [estimatedMarkerMaterial])
+        pole.position.y = height / 2
+        post.addChild(pole)
+        let cap = ModelEntity(mesh: .generateSphere(radius: 0.035), materials: [estimatedMarkerMaterial])
+        cap.position.y = height
+        post.addChild(cap)
+        if arrow {
+            let cone = ModelEntity(mesh: .generateCone(height: 0.2, radius: 0.05), materials: [estimatedMarkerMaterial])
+            cone.position = [0, height, -0.12]
+            cone.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
+            post.addChild(cone)
+        }
+        return post
+    }
+
+    private static func paintMarker(_ post: Entity, tracked: Bool) {
+        for case let part as ModelEntity in post.children {
+            part.model?.materials = [tracked ? trackedMarkerMaterial : estimatedMarkerMaterial]
+        }
+    }
+
+    /// Places the model's post and one post per scan pin (with its drift correction), green where
+    /// visionOS tracks the anchor and grey where it is estimated. A pin corrected by more than 2 cm
+    /// carries the size of the correction. Called every frame while the markers are shown.
+    func updateAnchorMarkers() {
+        guard anchorMarkers.isEnabled else { return }
+        housePin.isEnabled = placement.anchorID != nil && !isSearching
+        if housePin.isEnabled {
+            housePin.transform = Transform(matrix: placementTransform)
+            Self.paintMarker(housePin, tracked: houseAnchorTracked)
+        }
+        let poses = scanMesh.pinPoses
+        let ids = Set(poses.map(\.id))
+        for (id, marker) in pinMarkers where !ids.contains(id) {
+            marker.entity.removeFromParent()
+            pinMarkers[id] = nil
+        }
+        for pose in poses {
+            if pinMarkers[pose.id] == nil {
+                let entity = Self.post(height: 0.6, arrow: false)
+                anchorMarkers.addChild(entity)
+                pinMarkers[pose.id] = (entity: entity, tracked: false, label: 0)
+            }
+            var marker = pinMarkers[pose.id]!
+            marker.entity.transform = Transform(matrix: pose.originFromPin)
+            if marker.tracked != pose.tracked {
+                Self.paintMarker(marker.entity, tracked: pose.tracked)
+                marker.tracked = pose.tracked
+            }
+            let centimetres = pose.correction > 0.02 ? Int((pose.correction * 100).rounded()) : 0
+            if marker.label != centimetres {
+                marker.entity.findEntity(named: "correction")?.removeFromParent()
+                if centimetres > 0 { marker.entity.addChild(Self.correctionLabel(centimetres)) }
+                marker.label = centimetres
+            }
+            pinMarkers[pose.id] = marker
+        }
+    }
+
+    private static func correctionLabel(_ centimetres: Int) -> Entity {
+        let text = ModelEntity(
+            mesh: .generateText("↔ \(centimetres) cm", extrusionDepth: 0.002, font: .systemFont(ofSize: 0.06, weight: .semibold)),
+            materials: [UnlitMaterial(color: .white)])
+        text.position.x = -text.visualBounds(relativeTo: text).center.x
+        let label = Entity()
+        label.name = "correction"
+        label.position.y = 0.7
+        label.components.set(BillboardComponent())
+        label.addChild(text)
+        return label
     }
 
     private static func translation(_ m: simd_float4x4) -> SIMD3<Float> {
@@ -1110,19 +1354,15 @@ final class SceneController {
         guard worldTracking.state == .running else { return }
         let old = placement.anchorID
         placement.anchorID = nil
-        var transform = matrix_identity_float4x4
-        let rotation = simd_float3x3(simd_quatf(angle: placement.yaw, axis: [0, 1, 0]))
-        transform.columns.0 = SIMD4(rotation.columns.0, 0)
-        transform.columns.1 = SIMD4(rotation.columns.1, 0)
-        transform.columns.2 = SIMD4(rotation.columns.2, 0)
-        transform.columns.3 = SIMD4(placement.position, 1)
-        let anchor = WorldAnchor(originFromAnchorTransform: transform)
+        houseAnchorTracked = false
+        let anchor = WorldAnchor(originFromAnchorTransform: placementTransform)
         if let old {
             try? await worldTracking.removeAnchor(forID: old)
         }
         do {
             try await worldTracking.addAnchor(anchor)
             placement.anchorID = anchor.id
+            houseAnchorTracked = true
         } catch {
             placement.anchorID = nil
         }

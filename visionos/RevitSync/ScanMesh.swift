@@ -22,6 +22,7 @@ final class ScanMesh {
             live.values.forEach { $0.wireframe.isEnabled = isVisible }
             pendingFreeze.forEach { $0.wireframe.isEnabled = isVisible }
             cells.values.forEach { $0.wireframe.isEnabled = isVisible }
+            peers.values.forEach { $0.cells.values.forEach { $0.wireframe.isEnabled = isVisible } }
         }
     }
 
@@ -39,6 +40,9 @@ final class ScanMesh {
         var covering: Set<CellKey> = []
         /// Covered cells it hides: all but those whose pin last registered as drift.
         var hiding: Set<CellKey> = []
+        /// Cells of each shown peer scan the chunk has triangles in, keyed in that scan's frame;
+        /// all of them are hidden.
+        var peerCovering: [UUID: Set<CellKey>] = [:]
 
         var position: SIMD3<Float> { ScanMesh.translation(originFromPatch) }
     }
@@ -66,6 +70,28 @@ final class ScanMesh {
         var registering = false
     }
 
+    private struct PeerScan {
+        let group: Entity
+        var myScanFromPeerScan: simd_float4x4?
+        var reference: Bool
+        var cells: [CellKey: PeerScanCell] = [:]
+    }
+
+    private struct PeerScanCell {
+        let occluder: ModelEntity
+        let wireframe: ModelEntity
+        let mesh: MeshResource
+        let geometry: ScanGeometry
+        let scannedAt: Date
+        /// Key of the cell's centre in this headset's scan frame; nil while its scan is hidden.
+        var bucket: CellKey?
+    }
+
+    private struct PeerCellID: Hashable {
+        let scan: UUID
+        let key: CellKey
+    }
+
     struct PinPose {
         let id: UUID
         let originFromPin: simd_float4x4
@@ -80,11 +106,21 @@ final class ScanMesh {
 
     private let liveRoot = Entity()
     private let rememberedRoot = Entity()
+    private let peersRoot = Entity()
     private var live: [UUID: Patch] = [:]
     private var pendingFreeze: [Patch] = []
     private var cells: [CellKey: Cell] = [:]
     private var anchors: [UUID: Anchor] = [:]
     private var coverCounts: [CellKey: Int] = [:]
+    private var peers: [UUID: PeerScan] = [:]
+    private var peerCoverCounts: [PeerCellID: Int] = [:]
+    /// Peer cells of shown scans by the key of their centre in this headset's scan frame. Own
+    /// cells are bucketed by their own key.
+    private var peerBuckets: [CellKey: Set<PeerCellID>] = [:]
+    /// Bumped whenever a finishing site match would be against outdated settings or placements.
+    private var siteMatchGeneration = 0
+    private var siteMatching = false
+    private var lastSiteMatch: Date?
     private var voids: [Footprint.Void] = []
     private var worldFromModel = matrix_identity_float4x4
 
@@ -104,13 +140,24 @@ final class ScanMesh {
         return material
     }()
 
+    private let peerMaterial: UnlitMaterial = {
+        var material = UnlitMaterial(color: .systemPurple)
+        material.triangleFillMode = .lines
+        material.blending = .transparent(opacity: 0.4)
+        material.readsDepth = false
+        return material
+    }()
+
     init() {
         root.name = "scanMesh"
         liveRoot.name = "scanLive"
         rememberedRoot.name = "scanRemembered"
         rememberedRoot.isEnabled = false
+        peersRoot.name = "scanPeers"
+        peersRoot.isEnabled = false
         root.addChild(liveRoot)
         root.addChild(rememberedRoot)
+        root.addChild(peersRoot)
     }
 
     // MARK: Live updates
@@ -129,6 +176,7 @@ final class ScanMesh {
             cover(&patch)
             live[anchor.id] = patch
             registerDrift(patchID: anchor.id)
+            matchSite(patchID: anchor.id)
         case .removed:
             guard let patch = live.removeValue(forKey: anchor.id) else { return }
             freeze(patch)
@@ -159,6 +207,7 @@ final class ScanMesh {
         for patch in live.values { display(patch, material: liveMaterial) }
         for patch in pendingFreeze { display(patch, material: rememberedMaterial) }
         for cell in cells.values { display(cell) }
+        for scan in peers.values { scan.cells.values.forEach(display) }
     }
 
     // MARK: Pins
@@ -235,25 +284,71 @@ final class ScanMesh {
     var onCellsWritten: (([(key: CellKey, record: ScanCellRecord)]) -> Void)?
 
     /// This headset's own cells, for sending to other headsets.
-    var ownCells: [CellKey: ScanCellRecord] { [:] }
+    var ownCells: [CellKey: ScanCellRecord] { cells.mapValues(\.record) }
 
     /// Shows or replaces another headset's scan. `myScanFromPeerScan` maps that headset's scan
     /// frame into this one's; nil keeps the scan loaded but hidden (another site, or not lined up
     /// yet). Live chunks are matched against `reference` scans while `siteMatch` is set.
-    func setPeerScan(_ scanID: UUID, myScanFromPeerScan: simd_float4x4?, reference: Bool, cells: [PeerCell]) {}
+    func setPeerScan(_ scanID: UUID, myScanFromPeerScan: simd_float4x4?, reference: Bool, cells: [PeerCell]) {
+        if peers[scanID]?.reference == true || reference { siteMatchGeneration += 1 }
+        dropPeerScan(scanID)
+        let group = Entity()
+        group.name = "scanPeer"
+        group.isEnabled = myScanFromPeerScan != nil
+        peersRoot.addChild(group)
+        peers[scanID] = PeerScan(group: group, myScanFromPeerScan: myScanFromPeerScan, reference: reference)
+        for cell in cells { putPeerCell(cell, scan: scanID) }
+        recoverLive()
+    }
 
     /// Moves (or hides, with nil) a peer scan already set, without resending its cells.
-    func setPeerPlacement(_ scanID: UUID, myScanFromPeerScan: simd_float4x4?, reference: Bool) {}
+    func setPeerPlacement(_ scanID: UUID, myScanFromPeerScan: simd_float4x4?, reference: Bool) {
+        guard var scan = peers[scanID], scan.myScanFromPeerScan != myScanFromPeerScan || scan.reference != reference else { return }
+        if scan.reference || reference { siteMatchGeneration += 1 }
+        scan.myScanFromPeerScan = myScanFromPeerScan
+        scan.reference = reference
+        scan.group.isEnabled = myScanFromPeerScan != nil
+        for (key, cell) in scan.cells {
+            let id = PeerCellID(scan: scanID, key: key)
+            if let bucket = cell.bucket { unbucket(id, from: bucket) }
+            let bucket = myScanFromPeerScan.map { ScanGrid.key(Self.transformed($0, key.center)) }
+            scan.cells[key]!.bucket = bucket
+            if let bucket { peerBuckets[bucket, default: []].insert(id) }
+        }
+        peers[scanID] = scan
+        placePeerCells(scanID)
+        recoverLive()
+        refreshAllBuckets()
+    }
 
     /// Adds or replaces one cell of a peer scan already set.
-    func updatePeerCell(_ cell: PeerCell) {}
+    func updatePeerCell(_ cell: PeerCell) {
+        if peers[cell.scanID] == nil {
+            setPeerScan(cell.scanID, myScanFromPeerScan: nil, reference: false, cells: [cell])
+        } else {
+            putPeerCell(cell, scan: cell.scanID)
+        }
+    }
 
-    func removePeerScan(_ scanID: UUID) {}
+    func removePeerScan(_ scanID: UUID) {
+        if peers[scanID]?.reference == true { siteMatchGeneration += 1 }
+        dropPeerScan(scanID)
+    }
 
-    func removeAllPeerScans() {}
+    func removeAllPeerScans() {
+        peers.values.forEach { $0.group.removeFromParent() }
+        peers.removeAll()
+        peerBuckets.removeAll()
+        peerCoverCounts.removeAll()
+        for id in live.keys { live[id]?.peerCovering = [:] }
+        siteMatchGeneration += 1
+        cells.keys.forEach(refreshBucket)
+    }
 
     /// Matching of live chunks against reference peer scans; nil turns it off.
-    var siteMatch: SiteMatchMode?
+    var siteMatch: SiteMatchMode? {
+        didSet { siteMatchGeneration += 1 }
+    }
 
     /// One match result. `correction` (in this headset's scan frame) moves the reference scans
     /// from where they are drawn now to where they line up with the live scan, so the caller
@@ -273,8 +368,11 @@ final class ScanMesh {
         cells.removeAll()
         anchors.removeAll()
         coverCounts.removeAll()
+        peerCoverCounts.removeAll()
         rememberedRoot.isEnabled = false
+        peersRoot.isEnabled = false
         isAligned = false
+        refreshAllBuckets()
     }
 
     /// Places every pin's group: by its own tracked pose, else by the nearest tracked pin's estimate
@@ -300,7 +398,9 @@ final class ScanMesh {
         if redrift, aligned { recoverLive() }
         // Moving a group moves its cells relative to the voids.
         if !voids.isEmpty { cells.values.forEach(display) }
+        peers.keys.forEach(placePeerCells)
         rememberedRoot.isEnabled = aligned
+        peersRoot.isEnabled = aligned
         let wasAligned = isAligned
         isAligned = aligned
         guard aligned != wasAligned else { return }
@@ -312,9 +412,11 @@ final class ScanMesh {
             for id in live.keys {
                 live[id]?.covering = []
                 live[id]?.hiding = []
+                live[id]?.peerCovering = [:]
             }
             coverCounts.removeAll()
-            cells.values.forEach { $0.occluder.isEnabled = true }
+            peerCoverCounts.removeAll()
+            refreshAllBuckets()
         }
         recount()
     }
@@ -368,7 +470,7 @@ final class ScanMesh {
 
     /// Hides the remembered cells a live chunk has triangles in, except those whose pin last
     /// registered as drift: once corrected they line up with the chunk, so hiding them would only
-    /// flicker.
+    /// flicker. Cells of shown peer scans it has triangles in are always hidden.
     private func cover(_ patch: inout Patch) {
         guard let originFromScan = originFromScan(near: patch.position) else { return }
         patch.covering = ScanGrid.keys(of: patch.geometry, scanFromGeometry: Self.columns(originFromScan.inverse * patch.originFromPatch))
@@ -382,6 +484,23 @@ final class ScanMesh {
             cells[key]?.occluder.isEnabled = false
         }
         patch.hiding = hiding
+
+        var peerCovering: [UUID: Set<CellKey>] = [:]
+        for (id, scan) in peers {
+            guard let myScanFromPeerScan = scan.myScanFromPeerScan else { continue }
+            let peerScanFromPatch = myScanFromPeerScan.inverse * originFromScan.inverse * patch.originFromPatch
+            peerCovering[id] = ScanGrid.keys(of: patch.geometry, scanFromGeometry: Self.columns(peerScanFromPatch))
+        }
+        for (id, keys) in patch.peerCovering {
+            for key in keys.subtracting(peerCovering[id] ?? []) { release(PeerCellID(scan: id, key: key)) }
+        }
+        for (id, keys) in peerCovering {
+            for key in keys.subtracting(patch.peerCovering[id] ?? []) {
+                peerCoverCounts[PeerCellID(scan: id, key: key), default: 0] += 1
+                peers[id]?.cells[key]?.occluder.isEnabled = false
+            }
+        }
+        patch.peerCovering = peerCovering
     }
 
     /// Registers the live chunk against the remembered cells it overlaps, once per pin every two
@@ -396,7 +515,8 @@ final class ScanMesh {
             guard let anchor = anchors[owner], !anchor.registering,
                   anchor.lastRegistration.map({ now.timeIntervalSince($0) >= Self.registrationInterval }) ?? true,
                   let originFromScan = originFromScan(for: owner) else { continue }
-            let remembered = patch.covering.compactMap { cells[$0] }.filter { $0.record.owner == owner }.map(\.record.vertices)
+            let remembered = patch.covering.compactMap { cells[$0] }.filter { $0.record.owner == owner }
+                .map { (vertices: $0.record.vertices, originFromScan: originFromScan) }
             let liveGeometry = patch.geometry
             let originFromPatch = patch.originFromPatch
             let generation = anchor.generation
@@ -404,22 +524,69 @@ final class ScanMesh {
             anchors[owner]!.lastRegistration = now
             Task {
                 let result = await Task.detached {
-                    Self.register(remembered: remembered, originFromScan: originFromScan, live: liveGeometry, originFromPatch: originFromPatch)
+                    Self.register(remembered: remembered, live: liveGeometry, originFromPatch: originFromPatch, radii: ScanAlign.radii)
                 }.value
                 self.registered(owner, result, generation: generation)
             }
         }
     }
 
-    private nonisolated static func register(remembered: [Data], originFromScan: simd_float4x4, live: ScanGeometry, originFromPatch: simd_float4x4) -> ScanAlignment {
+    /// `remembered` is scan geometry with the origin-from-geometry transform placing each part.
+    private nonisolated static func register(remembered: [(vertices: Data, originFromScan: simd_float4x4)], live: ScanGeometry, originFromPatch: simd_float4x4, radii: [Float]) -> ScanAlignment {
         let livePositions = ScanGrid.positions(live.vertices).map { transformed(originFromPatch, $0) }
         guard let first = livePositions.first else { return ScanAlignment() }
         // Only remembered geometry inside what the chunk observed (plus the search radius) can match.
-        let margin = SIMD3<Float>(repeating: ScanAlign.radii[0])
+        let margin = SIMD3<Float>(repeating: radii[0])
         let lo = livePositions.reduce(first, simd_min) - margin
         let hi = livePositions.reduce(first, simd_max) + margin
-        let source = remembered.flatMap(ScanGrid.positions).map { transformed(originFromScan, $0) }.filter { all($0 .>= lo) && all($0 .<= hi) }
-        return ScanAlign.register(source: source, target: ScanAlign.Target(positions: livePositions, indices: ScanGrid.indices(live.indices)))
+        let source = remembered
+            .flatMap { part in ScanGrid.positions(part.vertices).map { transformed(part.originFromScan, $0) } }
+            .filter { all($0 .>= lo) && all($0 .<= hi) }
+        return ScanAlign.register(source: source, target: ScanAlign.Target(positions: livePositions, indices: ScanGrid.indices(live.indices)), radii: radii)
+    }
+
+    /// Registers the live chunk against the nearby cells of every shown reference peer scan, at
+    /// most one match at a time and one start every two seconds, off the main actor. The result is
+    /// measured in the origin frame through the pin nearest the chunk and reported in this
+    /// headset's scan frame.
+    private func matchSite(patchID: UUID) {
+        guard let mode = siteMatch, isAligned, !siteMatching, let patch = live[patchID] else { return }
+        let now = Date()
+        guard lastSiteMatch.map({ now.timeIntervalSince($0) >= Self.registrationInterval }) ?? true,
+              let pin = nearestTracked(toOrigin: patch.position), let originFromScan = originFromScan(for: pin) else { return }
+        let reach: Int32 = mode == .join ? 2 : 1
+        let remembered = peers.flatMap { id, scan -> [(vertices: Data, originFromScan: simd_float4x4)] in
+            guard scan.reference, let myScanFromPeerScan = scan.myScanFromPeerScan else { return [] }
+            let originFromPeerScan = originFromScan * myScanFromPeerScan
+            let near = (patch.peerCovering[id] ?? []).reduce(into: Set<CellKey>()) { near, key in
+                for dx in -reach...reach {
+                    for dy in -reach...reach {
+                        for dz in -reach...reach { near.insert(CellKey(ix: key.ix + dx, iy: key.iy + dy, iz: key.iz + dz)) }
+                    }
+                }
+            }
+            return near.compactMap { scan.cells[$0].map { (vertices: $0.geometry.vertices, originFromScan: originFromPeerScan) } }
+        }
+        guard !remembered.isEmpty else { return }
+        let generation = siteMatchGeneration
+        let pinGeneration = anchors[pin]!.generation
+        let liveGeometry = patch.geometry
+        let originFromPatch = patch.originFromPatch
+        let radii = mode.radii
+        siteMatching = true
+        lastSiteMatch = now
+        Task {
+            let result = await Task.detached {
+                Self.register(remembered: remembered, live: liveGeometry, originFromPatch: originFromPatch, radii: radii)
+            }.value
+            self.siteMatched(result, mode: mode, originFromScan: originFromScan, generation: generation, pin: pin, pinGeneration: pinGeneration)
+        }
+    }
+
+    private func siteMatched(_ result: ScanAlignment, mode: SiteMatchMode, originFromScan: simd_float4x4, generation: Int, pin: UUID, pinGeneration: Int) {
+        siteMatching = false
+        guard siteMatchGeneration == generation, anchors[pin]?.generation == pinGeneration else { return }
+        onSiteMatch?(result, originFromScan.inverse * Self.matrix(result.columns) * originFromScan, mode)
     }
 
     private func registered(_ owner: UUID, _ result: ScanAlignment, generation: Int) {
@@ -433,6 +600,7 @@ final class ScanMesh {
             anchors[owner]!.generation += 1
             if let originFromScan = originFromScan(for: owner) { anchors[owner]!.group.transform = Transform(matrix: originFromScan) }
             if !voids.isEmpty { cells.values.filter { $0.record.owner == owner }.forEach(display) }
+            peers.keys.forEach(placePeerCells)
         }
         guard drifting != anchors[owner]!.drifting else { return }
         anchors[owner]!.drifting = drifting
@@ -446,7 +614,17 @@ final class ScanMesh {
             coverCounts[key] = remaining
         } else {
             coverCounts[key] = nil
-            cells[key]?.occluder.isEnabled = true
+            refreshBucket(key)
+        }
+    }
+
+    private func release(_ id: PeerCellID) {
+        let remaining = (peerCoverCounts[id] ?? 0) - 1
+        if remaining > 0 {
+            peerCoverCounts[id] = remaining
+        } else {
+            peerCoverCounts[id] = nil
+            if let bucket = peers[id.scan]?.cells[id.key]?.bucket { refreshBucket(bucket) }
         }
     }
 
@@ -461,6 +639,9 @@ final class ScanMesh {
 
     private func commit(_ patch: Patch) {
         for key in patch.hiding { release(key) }
+        for (id, keys) in patch.peerCovering {
+            for key in keys { release(PeerCellID(scan: id, key: key)) }
+        }
         writeCells(from: patch)
         patch.occluder.removeFromParent()
     }
@@ -472,6 +653,7 @@ final class ScanMesh {
     private func writeCells(from patch: Patch) {
         guard let originFromScan = originFromScan(near: patch.position), let box = ScanGrid.bounds(of: patch.geometry) else { return }
         let scanFromPatch = originFromScan.inverse * patch.originFromPatch
+        var written: [(key: CellKey, record: ScanCellRecord)] = []
         for (key, part) in ScanGrid.bin(patch.geometry, scanFromGeometry: Self.columns(scanFromPatch)) {
             guard let owner = nearestPin(toScan: key.center), let ownerOriginFromScan = self.originFromScan(for: owner) else { continue }
             let ownerScanFromPatch = ownerOriginFromScan.inverse * patch.originFromPatch
@@ -483,21 +665,115 @@ final class ScanMesh {
                 }
                 return ScanGrid.merged(old: old, replacingInside: box, boxFromOld: Self.columns(ownerScanFromPatch.inverse), with: fresh)
             } ?? fresh
-            let record = ScanCellRecord(owner: owner, geometry: geometry)
+            let record = ScanCellRecord(owner: owner, geometry: geometry, revision: nextCellRevision?() ?? 0, scannedAt: Date())
             setCell(key, record)
             ScanStore.save(record, key: key)
+            written.append((key: key, record: record))
         }
+        if !written.isEmpty { onCellsWritten?(written) }
     }
 
     private func setCell(_ key: CellKey, _ record: ScanCellRecord) {
         cells[key]?.occluder.removeFromParent()
         cells[key] = nil
+        defer { refreshBucket(key) }
         guard let group = anchors[record.owner]?.group, let mesh = Self.mesh(record.geometry) else { return }
         let (occluder, wireframe) = makeEntities(parent: group)
-        occluder.isEnabled = coverCounts[key] == nil
         let cell = Cell(occluder: occluder, wireframe: wireframe, mesh: mesh, record: record)
         display(cell)
         cells[key] = cell
+    }
+
+    // MARK: Peer scans
+
+    private func putPeerCell(_ cell: PeerCell, scan scanID: UUID) {
+        guard var scan = peers[scanID] else { return }
+        let id = PeerCellID(scan: scanID, key: cell.key)
+        var touched = Set<CellKey>()
+        if let old = scan.cells.removeValue(forKey: cell.key) {
+            old.occluder.removeFromParent()
+            if let bucket = old.bucket {
+                unbucket(id, from: bucket)
+                touched.insert(bucket)
+            }
+        }
+        if let mesh = Self.mesh(cell.geometry) {
+            let (occluder, wireframe) = makeEntities(parent: scan.group)
+            occluder.isEnabled = false
+            let bucket = scan.myScanFromPeerScan.map { ScanGrid.key(Self.transformed($0, cell.key.center)) }
+            let entry = PeerScanCell(occluder: occluder, wireframe: wireframe, mesh: mesh, geometry: cell.geometry, scannedAt: cell.scannedAt, bucket: bucket)
+            if let myScanFromPeerScan = scan.myScanFromPeerScan { place(entry, at: cell.key, myScanFromPeerScan) }
+            display(entry)
+            scan.cells[cell.key] = entry
+            if let bucket {
+                peerBuckets[bucket, default: []].insert(id)
+                touched.insert(bucket)
+            }
+        }
+        peers[scanID] = scan
+        touched.forEach(refreshBucket)
+    }
+
+    /// Removes a peer scan's entities, the live chunks' hold on its cells, and its cells from the
+    /// buckets, then lets whatever they outdated show again.
+    private func dropPeerScan(_ scanID: UUID) {
+        guard let scan = peers.removeValue(forKey: scanID) else { return }
+        scan.group.removeFromParent()
+        for id in live.keys { live[id]?.peerCovering[scanID] = nil }
+        peerCoverCounts = peerCoverCounts.filter { $0.key.scan != scanID }
+        var touched = Set<CellKey>()
+        for (key, cell) in scan.cells {
+            guard let bucket = cell.bucket else { continue }
+            unbucket(PeerCellID(scan: scanID, key: key), from: bucket)
+            touched.insert(bucket)
+        }
+        touched.forEach(refreshBucket)
+    }
+
+    private func unbucket(_ id: PeerCellID, from bucket: CellKey) {
+        peerBuckets[bucket]?.remove(id)
+        if peerBuckets[bucket]?.isEmpty == true { peerBuckets[bucket] = nil }
+    }
+
+    private func placePeerCells(_ scanID: UUID) {
+        guard let scan = peers[scanID], let myScanFromPeerScan = scan.myScanFromPeerScan else { return }
+        for (key, cell) in scan.cells {
+            place(cell, at: key, myScanFromPeerScan)
+            if !voids.isEmpty { display(cell) }
+        }
+    }
+
+    /// Places a peer cell through the own pin nearest it, so it follows that pin's drift
+    /// correction like the own cells around it.
+    private func place(_ cell: PeerScanCell, at key: CellKey, _ myScanFromPeerScan: simd_float4x4) {
+        guard let originFromScan = originFromScan(nearScan: Self.transformed(myScanFromPeerScan, key.center)) else { return }
+        cell.occluder.transform = Transform(matrix: originFromScan * myScanFromPeerScan)
+    }
+
+    /// Newest wins per metre: of the scans (own, or one peer scan) with cells in a bucket, only
+    /// the one holding the latest `scannedAt` is shown there, own first on a tie. A shown cell is
+    /// still hidden while a live chunk covers it.
+    private func refreshBucket(_ bucket: CellKey) {
+        let members = peerBuckets[bucket] ?? []
+        var winner: UUID?
+        var latest = cells[bucket]?.record.scannedAt
+        for id in members {
+            guard let at = peers[id.scan]?.cells[id.key]?.scannedAt else { continue }
+            if let best = latest {
+                if at < best { continue }
+                if at == best, winner.map({ $0.uuidString <= id.scan.uuidString }) ?? true { continue }
+            }
+            winner = id.scan
+            latest = at
+        }
+        cells[bucket]?.occluder.isEnabled = winner == nil && coverCounts[bucket] == nil
+        for id in members {
+            peers[id.scan]?.cells[id.key]?.occluder.isEnabled = winner == id.scan && peerCoverCounts[id] == nil
+        }
+    }
+
+    private func refreshAllBuckets() {
+        Set(cells.keys).union(peerBuckets.keys).forEach(refreshBucket)
     }
 
     // MARK: Void cut
@@ -508,6 +784,10 @@ final class ScanMesh {
 
     private func display(_ cell: Cell) {
         display(cell.mesh, cell.record.geometry, on: cell.occluder, cell.wireframe, material: rememberedMaterial)
+    }
+
+    private func display(_ cell: PeerScanCell) {
+        display(cell.mesh, cell.geometry, on: cell.occluder, cell.wireframe, material: peerMaterial)
     }
 
     /// Shows `full` minus the triangles whose centre lies inside a void. Most meshes touch no void's

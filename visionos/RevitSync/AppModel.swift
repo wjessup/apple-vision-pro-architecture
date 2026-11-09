@@ -51,7 +51,9 @@ final class AppModel {
     var autoReload = true
     var phase: SyncPhase = .idle
     var lastError: String?
-    var immersiveOpen = false
+    var immersiveOpen = false {
+        didSet { sharing.immersiveOpen = immersiveOpen }
+    }
     var locked = UserDefaults.standard.bool(forKey: "lockPosition") {
         didSet {
             UserDefaults.standard.set(locked, forKey: "lockPosition")
@@ -78,7 +80,8 @@ final class AppModel {
         didSet { UserDefaults.standard.set(followMe, forKey: "followMe") }
     }
 
-    let scene = SceneController(legacyProject: UserDefaults.standard.string(forKey: "selectedProject"))
+    let scene: SceneController
+    let sharing: SiteSharing
 
     private var client: SyncClient?
     private var eventTask: Task<Void, Never>?
@@ -86,6 +89,9 @@ final class AppModel {
     private let browser = ServerBrowser()
 
     init() {
+        let scene = SceneController(legacyProject: UserDefaults.standard.string(forKey: "selectedProject"))
+        self.scene = scene
+        sharing = SiteSharing(scene: scene)
         scene.setMode(placementMode)
         // didSet does not run for the saved values.
         scene.setLocked(locked)

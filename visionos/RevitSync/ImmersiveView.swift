@@ -21,6 +21,7 @@ struct ImmersiveView: View {
             content.add(scene.root)
             content.add(scene.scanMesh.root)
             content.add(scene.anchorMarkers)
+            content.add(model.sharing.headMarkers)
             scene.startTracking()
             scene.resetPanel()
             content.add(scene.panelRoot)
@@ -33,6 +34,7 @@ struct ImmersiveView: View {
                 scene.updateCornerBallSize()
                 scene.updateMarkSizes()
                 scene.updateAnchorMarkers()
+                model.sharing.updateHeadMarkers()
             }
         } update: { _, attachments in
             for measurement in scene.measurements {

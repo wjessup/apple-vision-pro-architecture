@@ -17,6 +17,7 @@ struct ContentView: View {
                         placementSection
                         realWorldSection
                     }
+                    otherHeadsetsSection
                 }
                 .navigationTitle("Projects")
             }
@@ -208,7 +209,44 @@ struct ContentView: View {
                 } message: {
                     Text("Every piece kept is deleted from the headset, for every model. Scanning starts again from where you are.")
                 }
-            Text("Trees, people and other real things the headset has scanned hide the parts of the model behind them. Pieces you walk away from are kept and saved on the headset, so the scan grows to cover the whole property and comes back next time, wherever you start. Every model shares this scan and the same placement on the property. Turn this on to see the scan as a cyan wireframe; remembered pieces are dimmer.")
+            Text("Trees, people and other real things the headset has scanned hide the parts of the model behind them. Pieces you walk away from are kept and saved on the headset, so the scan grows to cover the whole property and comes back next time, wherever you start. Every model shares this scan and the same placement on the property. Turn this on to see the scan as a cyan wireframe; remembered pieces are dimmer, and other headsets' scans show as a purple wireframe.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var otherHeadsetsSection: some View {
+        @Bindable var sharing = model.sharing
+        let line = sharing.alignmentLine
+        return Section("Other headsets") {
+            Toggle("Share with nearby headsets", isOn: $sharing.enabled)
+            TextField("Headset name", text: $sharing.name)
+                .autocorrectionDisabled()
+            Label(line.text, systemImage: line.precise ? "checkmark.circle.fill" : "scope")
+                .foregroundStyle(line.precise ? AnyShapeStyle(.green) : line.attention ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+            if let problem = sharing.linkProblem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            ForEach(sharing.peerRows) { row in
+                Label {
+                    VStack(alignment: .leading) {
+                        Text(row.name)
+                        Text(row.status)
+                            .font(.caption)
+                            .foregroundStyle(row.attention ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    }
+                } icon: {
+                    Image(systemName: row.connected ? "visionpro.fill" : "visionpro")
+                        .foregroundStyle(row.connected ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                }
+            }
+            Button("Line up exactly with SharePlay", systemImage: "shareplay") { sharing.lineUp.start() }
+            if let state = sharing.lineUp.state.label {
+                Text(state)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Headsets running Revit Sync nearby find each other over Wi-Fi, with no network or computer needed. They share what they've scanned and agree where the house stands; the last person to place the house at real size moves it for everyone.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

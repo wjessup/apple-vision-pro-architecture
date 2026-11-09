@@ -966,6 +966,7 @@ final class SceneController {
     func setScale(_ scale: Float) {
         placement.scale = min(max(scale, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
         applyPlacement()
+        if atRealSize, let pending = pendingSharedPlacement { adoptSharedPlacement(scanFromModel: pending) }
     }
 
     func placeInFrontOfUser() {
@@ -1049,7 +1050,9 @@ final class SceneController {
     /// `scanFromModel`; once located, a model never placed in the scan frame gets recorded in it.
     private func syncScanFrame() {
         guard scanMesh.isAligned else { return }
-        if isSearching {
+        if atRealSize, let pending = pendingSharedPlacement {
+            adoptSharedPlacement(scanFromModel: pending)
+        } else if isSearching {
             guard let scanFromModel = placement.scanFromModel.map(ScanMesh.matrix),
                   let originFromScan = scanMesh.originFromScan(nearScan: Self.translation(scanFromModel)) else { return }
             let m = originFromScan * scanFromModel
@@ -1066,8 +1069,10 @@ final class SceneController {
     private func recordScanFrame() {
         guard placement.scanFromModel == nil, !isSearching,
               let originFromScan = scanMesh.originFromScan(near: placement.position) else { return }
-        placement.scanFromModel = ScanMesh.columns(originFromScan.inverse * placementTransform)
+        let scanFromModel = originFromScan.inverse * placementTransform
+        placement.scanFromModel = ScanMesh.columns(scanFromModel)
         placement.save()
+        if atRealSize { onPlacementPublished?(scanFromModel) }
     }
 
     /// The model's pose without scale: what its world anchor and `scanFromModel` record.
@@ -1090,6 +1095,14 @@ final class SceneController {
         placement.scanFromModel = scanMesh.originFromScan(near: placement.position).map { ScanMesh.columns($0.inverse * placementTransform) }
         placement.save()
         pushVoids()
+        repin()
+        if atRealSize, let scanFromModel = placement.scanFromModel {
+            pendingSharedPlacement = nil
+            onPlacementPublished?(ScanMesh.matrix(scanFromModel))
+        }
+    }
+
+    private func repin() {
         pinTask = Task { [previous = pinTask] in
             await previous?.value
             await pinWorldAnchor()
@@ -1161,6 +1174,11 @@ final class SceneController {
                 await ensureScanAnchors()
                 await locatePlacement()
             }
+            Task {
+                for await availability in worldTracking.worldAnchorSharingAvailability {
+                    anchorSharingAvailable = availability == .available
+                }
+            }
             for await update in worldTracking.anchorUpdates {
                 let m = update.anchor.originFromAnchorTransform
                 var removed = false
@@ -1171,10 +1189,14 @@ final class SceneController {
                     syncScanFrame()
                     continue
                 }
-                guard update.anchor.id == placement.anchorID else { continue }
-                houseAnchorTracked = tracked
-                guard tracked, !isGesturing else { continue }
-                adoptAnchorPose(m)
+                if update.anchor.id == placement.anchorID {
+                    houseAnchorTracked = tracked
+                    if tracked, !isGesturing { adoptAnchorPose(m) }
+                    continue
+                }
+                if tracked, update.anchor.isSharedWithNearbyParticipants {
+                    onSharedAnchor?(update.anchor.id, m)
+                }
             }
         }
     }
@@ -1257,8 +1279,73 @@ final class SceneController {
         // The next scan starts a new frame, which the old record means nothing in.
         placement.scanFromModel = nil
         placement.save()
+        pendingSharedPlacement = nil
         Task { await ensureScanAnchors() }
+        onScanCleared?()
     }
+
+    // MARK: Sharing with other headsets (driven by SiteSharing)
+
+    /// Called with `scanFromModel` whenever the house is placed by hand at real size while its
+    /// pose in the scan frame is known: `commitPlacement` and the first `recordScanFrame`.
+    var onPlacementPublished: ((simd_float4x4) -> Void)?
+
+    /// Called after Clear scan, once the own scan is gone.
+    var onScanCleared: (() -> Void)?
+
+    /// Places the house where another headset put it, given in this headset's scan frame, and
+    /// re-pins its world anchor. Never calls `onPlacementPublished`.
+    func adoptSharedPlacement(scanFromModel: simd_float4x4) {
+        guard !isGesturing else { return }
+        guard atRealSize else {
+            pendingSharedPlacement = scanFromModel
+            return
+        }
+        guard let originFromScan = scanMesh.originFromScan(nearScan: Self.translation(scanFromModel)) else {
+            // Kept until `syncScanFrame` sees the scan aligned; it then wins over the house's own
+            // saved anchor, which still marks where this headset last put it.
+            pendingSharedPlacement = scanFromModel
+            return
+        }
+        pendingSharedPlacement = nil
+        placement.scanFromModel = ScanMesh.columns(scanFromModel)
+        let m = originFromScan * scanFromModel
+        placement.position = Self.translation(m)
+        placement.yaw = Self.normalized(atan2(m.columns.2.x, m.columns.2.z))
+        applyPlacement()
+        pushVoids()
+        if isSearching { found(via: .scan) }
+        placement.save()
+        repin()
+    }
+
+    /// A shared placement waiting for 1:1 scale or for the scan to align.
+    private var pendingSharedPlacement: simd_float4x4?
+
+    /// The wearer's head in the scan frame; nil while not tracking or the scan is not aligned.
+    func scanFromHead() -> simd_float4x4? {
+        guard let pose = devicePose(), let originFromScan = scanMesh.originFromScan(near: Self.translation(pose)) else { return nil }
+        return originFromScan.inverse * pose
+    }
+
+    /// Shared world anchors can be created now (a nearby SharePlay session is active).
+    private(set) var anchorSharingAvailable = false
+
+    /// Creates a world anchor shared with nearby SharePlay participants at the wearer's head,
+    /// upright and turned to their heading. Nil when sharing is unavailable or the add failed.
+    /// Session-only: never saved.
+    func addSharedAnchor() async -> (id: UUID, originFromAnchor: simd_float4x4)? {
+        guard anchorSharingAvailable, let pose = devicePose() else { return nil }
+        var transform = simd_float4x4(Self.yawRotation(pose))
+        transform.columns.3 = SIMD4(Self.translation(pose), 1)
+        let anchor = WorldAnchor(originFromAnchorTransform: transform, sharedWithNearbyParticipants: true)
+        guard (try? await worldTracking.addAnchor(anchor)) != nil else { return nil }
+        return (anchor.id, transform)
+    }
+
+    /// A world anchor shared with nearby participants (one this headset created, or another
+    /// headset's) is tracked at this pose. Shared anchors carry the same id on every headset.
+    var onSharedAnchor: ((UUID, simd_float4x4) -> Void)?
 
     // MARK: Anchor markers
 

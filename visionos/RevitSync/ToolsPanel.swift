@@ -15,6 +15,11 @@ struct ToolsPanel: View {
                     .font(.callout)
                     .foregroundStyle(scene.isSearching ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
             }
+            if let notice = model.sharing.toolsNotice {
+                Label(notice, systemImage: "person.2.wave.2")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
         }
         .padding(10)
         .glassBackgroundEffect()
